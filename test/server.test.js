@@ -4,140 +4,127 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
 
-async function startMockAddon() {
+async function startMockProvider() {
   const server = http.createServer(
     (req, res) => {
+
+      const path =
+        decodeURIComponent(
+          new URL(
+            req.url,
+            'http://mock'
+          ).pathname
+        );
+
       res.setHeader(
         'Content-Type',
         'application/json'
       );
 
-      const p =
-        decodeURIComponent(
-          new URL(
-            req.url,
-            'http://localhost'
-          ).pathname
-        );
+      let body;
 
-      const body = (() => {
-
-        if (p === '/manifest.json') {
-          return {
-            id: 'local.test',
-            name: 'Local',
-            resources: [
-              'catalog',
-              'meta',
-              'stream',
-              'subtitles'
-            ],
-            types: ['anime']
-          };
-        }
-
-        if (
-          p ===
-          '/catalog/anime/kitsu-anime-list.json'
-        ) {
-          return {
-            metas: [
-              {
-                id: 'demo-1',
-                type: 'anime',
-                name: 'Demo Anime',
-                poster:
-                  'https://example.com/demo.jpg'
-              }
-            ]
-          };
-        }
-
-        if (
-          p ===
-          '/catalog/anime/kitsu-anime-list/search=demo.json'
-        ) {
-          return {
-            metas: [
-              {
-                id: 'demo-1',
-                type: 'anime',
-                name: 'Demo Anime'
-              }
-            ]
-          };
-        }
-
-        if (
-          p ===
-          '/meta/anime/demo-1.json'
-        ) {
-          return {
-            meta: {
-              id: 'demo-1',
+      if (
+        path ===
+        '/catalog/anime/kitsu-anime-trending.json'
+      ) {
+        body = {
+          metas: [
+            {
+              id: 'kitsu:1',
               type: 'anime',
               name: 'Demo Anime',
-              description:
-                'Test description',
-
-              videos: [
-                {
-                  id: 'demo-1:1',
-                  title: 'Episode 1'
-                },
-
-                {
-                  id: 'demo-1:2',
-                  title: 'Episode 2'
-                }
-              ]
+              poster:
+                'https://example.com/demo.jpg'
             }
-          };
-        }
+          ]
+        };
 
-        if (
-          p ===
-          '/stream/anime/demo-1:1.json'
-        ) {
-          return {
-            streams: [
+      } else if (
+        path ===
+        '/catalog/anime/kitsu-anime-list/search=demo.json'
+      ) {
+        body = {
+          metas: [
+            {
+              id: 'kitsu:1',
+              type: 'anime',
+              name: 'Demo Anime'
+            }
+          ]
+        };
+
+      } else if (
+        path ===
+        '/meta/anime/kitsu:1.json'
+      ) {
+        body = {
+          meta: {
+            id: 'kitsu:1',
+            type: 'anime',
+            name: 'Demo Anime',
+            description:
+              'A deterministic test title.',
+
+            videos: [
               {
-                title: 'Test MP4',
-                url:
-                  'https://example.com/video.mp4'
+                id: 'kitsu:1:1',
+                title: 'Episode 1'
               },
 
               {
-                title: 'Non HTTP',
-                infoHash: 'abc'
+                id: 'kitsu:1:2',
+                title: 'Episode 2'
               }
             ]
-          };
-        }
+          }
+        };
 
-        if (
-          p ===
-          '/subtitles/anime/demo-1:1.json'
-        ) {
-          return {
-            subtitles: [
-              {
-                id: 's1',
-                url:
-                  'https://example.com/sub.vtt',
-                lang: 'en',
-                label: 'English'
-              }
-            ]
-          };
-        }
+      } else if (
+        path ===
+        '/stream/anime/kitsu:1:1.json'
+      ) {
+        body = {
+          streams: [
+            {
+              name:
+                'Authorized Test Stream',
+              url:
+                'https://example.com/video.mp4'
+            },
 
+            {
+              name:
+                'Authorized Test Stream',
+              url:
+                'https://example.com/video.mp4'
+            }
+          ]
+        };
+
+      } else if (
+        path ===
+        '/subtitles/anime/kitsu:1:1.json'
+      ) {
+        body = {
+          subtitles: [
+            {
+              id: 'sub1',
+              url:
+                'https://example.com/sub.vtt',
+              lang: 'eng',
+              label: 'English'
+            }
+          ]
+        };
+
+      } else {
         res.statusCode = 404;
 
-        return {
-          error: 'not found'
+        body = {
+          error:
+            'not found'
         };
-      })();
+      }
 
       res.end(
         JSON.stringify(body)
@@ -156,30 +143,48 @@ async function startMockAddon() {
 
   return {
     server,
-    url:
+
+    endpoint:
       `http://127.0.0.1:${
         server.address().port
       }`
   };
 }
 
-async function startApp(env) {
-  const old = process.env;
-
-  Object.assign(
-    process.env,
-    env
-  );
-
-  for (const key of [
+async function startApp(
+  environment
+) {
+  const keys = [
     'METADATA_ADDONS',
     'STREAM_ADDONS',
     'SUBTITLE_ADDONS',
-    'METADATA_TYPE',
-    'METADATA_CATALOG_ID'
-  ]) {
-    if (env[key] === undefined) {
+    'ADDON_ID',
+    'ADDON_NAME',
+    'CONTACT_EMAIL',
+    'PUBLIC_URL'
+  ];
+
+  const old =
+    Object.fromEntries(
+      keys.map(
+        key => [
+          key,
+          process.env[key]
+        ]
+      )
+    );
+
+  for (
+    const key of keys
+  ) {
+    if (
+      environment[key] ===
+      undefined
+    ) {
       delete process.env[key];
+    } else {
+      process.env[key] =
+        environment[key];
     }
   }
 
@@ -190,7 +195,9 @@ async function startApp(env) {
   ];
 
   const app =
-    require('../server.js');
+    require(
+      '../server.js'
+    );
 
   const server =
     app.createServer();
@@ -204,287 +211,236 @@ async function startApp(env) {
       )
   );
 
-  process.env = old;
+  for (
+    const key of keys
+  ) {
+    if (
+      old[key] ===
+      undefined
+    ) {
+      delete process.env[key];
+    } else {
+      process.env[key] =
+        old[key];
+    }
+  }
 
   return {
     server,
-    url:
+
+    base:
       `http://127.0.0.1:${
         server.address().port
-      }`
+      }`,
+
+    app
   };
 }
 
-async function get(url) {
-  const r =
-    await fetch(url);
+async function fetchText(
+  url,
+  init
+) {
+  const response =
+    await fetch(
+      url,
+      init
+    );
 
   const text =
-    await r.text();
+    await response.text();
 
   return {
-    r,
-    text,
-    json: () =>
-      JSON.parse(text)
+    response,
+    text
+  };
+}
+
+async function fetchJson(
+  url,
+  init
+) {
+  const result =
+    await fetchText(
+      url,
+      init
+    );
+
+  return {
+    ...result,
+
+    json:
+      JSON.parse(
+        result.text
+      )
   };
 }
 
 test(
-  'helper functions produce correct Stremio paths',
-  async () => {
+  'resource URL and extra parsing are correct',
+  () => {
 
-    const {
-      routeUrl,
-      isLikelyHls,
-      mergeUnique
-    } =
-      require('../server.js');
+    const app =
+      require(
+        '../server.js'
+      );
 
     assert.equal(
-      routeUrl(
-        'http://localhost:1234',
-        'catalog',
-        'series',
-        'kitsu-anime-list'
+      app.resourceUrl(
+        'https://example.com',
+        'meta',
+        'anime',
+        'kitsu:1'
       ),
 
-      'http://localhost:1234/catalog/series/kitsu-anime-list.json'
+      'https://example.com/meta/anime/kitsu%3A1.json'
     );
 
     assert.equal(
-      routeUrl(
-        'http://localhost:1234',
+      app.resourceUrl(
+        'https://example.com',
         'catalog',
-        'series',
+        'anime',
         'kitsu-anime-list',
-        {
-          key: 'search',
-          value: 'one piece'
-        }
+        [
+          [
+            'search',
+            'one piece'
+          ],
+
+          [
+            'skip',
+            '10'
+          ]
+        ]
       ),
 
-      'http://localhost:1234/catalog/series/kitsu-anime-list/search=one%20piece.json'
-    );
-
-    assert.equal(
-      isLikelyHls(
-        'https://example.com/a.m3u8?x=1'
-      ),
-      true
-    );
-
-    assert.equal(
-      isLikelyHls(
-        'https://example.com/a.mp4'
-      ),
-      false
+      'https://example.com/catalog/anime/kitsu-anime-list/search=one%20piece&skip=10.json'
     );
 
     assert.deepEqual(
-      mergeUnique(
+      app.parseExtras(
         [
-          { id: 'a' },
-          { id: 'a' },
-          { id: 'b' }
-        ],
-        x => x.id
+          'search=demo&skip=10'
+        ]
       ),
 
       [
-        { id: 'a' },
-        { id: 'b' }
+        [
+          'search',
+          'demo'
+        ],
+
+        [
+          'skip',
+          '10'
+        ]
+      ]
+    );
+
+    assert.deepEqual(
+      app.parseExtras(
+        [
+          'search=hello%26world'
+        ]
+      ),
+
+      [
+        [
+          'search',
+          'hello&world'
+        ]
       ]
     );
   }
 );
 
 test(
-  'end-to-end catalog/search/meta/streams/subtitles/health',
-  async t => {
-
-    const addon =
-      await startMockAddon();
-
-    t.after(
-      () =>
-        addon.server.close()
-    );
+  'manifest exposes the expected Stremio anime resources',
+  () => {
 
     const app =
-      await startApp({
-        METADATA_ADDONS:
-          addon.url,
-
-        STREAM_ADDONS:
-          addon.url,
-
-        SUBTITLE_ADDONS:
-          addon.url,
-
-        METADATA_TYPE:
-          'anime',
-
-        METADATA_CATALOG_ID:
-          'kitsu-anime-list'
-      });
-
-    t.after(
-      () =>
-        app.server.close()
-    );
-
-    let x =
-      await get(
-        `${app.url}/healthz`
+      require(
+        '../server.js'
       );
 
-    assert.equal(
-      x.r.status,
-      200
-    );
+    const manifest =
+      app.manifest();
 
     assert.equal(
-      x.json().status,
-      'ok'
-    );
-
-    x =
-      await get(
-        `${app.url}/api/catalog`
-      );
-
-    assert.equal(
-      x.r.status,
-      200
+      manifest.id,
+      'com.aniv3.bridge'
     );
 
     assert.equal(
-      x.json().metas[0].id,
-      'demo-1'
+      manifest.idProperty,
+      'id'
     );
 
-    x =
-      await get(
-        `${app.url}/api/search?q=demo`
-      );
-
-    assert.equal(
-      x.r.status,
-      200
+    assert.ok(
+      manifest.types.includes(
+        'anime'
+      )
     );
 
-    assert.equal(
-      x.json().metas[0].name,
-      'Demo Anime'
+    assert.ok(
+      manifest.resources.includes(
+        'catalog'
+      )
     );
 
-    x =
-      await get(
-        `${app.url}/api/meta/anime/demo-1`
-      );
-
-    assert.equal(
-      x.r.status,
-      200
+    assert.ok(
+      manifest.resources.includes(
+        'meta'
+      )
     );
 
-    assert.equal(
-      x.json().meta.videos.length,
-      2
+    assert.ok(
+      Array.isArray(
+        manifest.catalogs
+      )
     );
 
-    x =
-      await get(
-        `${app.url}/api/streams/anime/demo-1%3A1`
-      );
-
-    assert.equal(
-      x.r.status,
-      200
+    assert.ok(
+      manifest.catalogs.some(
+        catalog =>
+          catalog.id ===
+          'anime-trending'
+      )
     );
 
-    assert.equal(
-      x.json().streams.length,
-      2
-    );
-
-    assert.equal(
-      x.json().streams[0].url,
-      'https://example.com/video.mp4'
-    );
-
-    x =
-      await get(
-        `${app.url}/api/subtitles/anime/demo-1%3A1`
-      );
-
-    assert.equal(
-      x.r.status,
-      200
-    );
-
-    assert.equal(
-      x.json().subtitles[0].lang,
-      'en'
-    );
-
-    x =
-      await get(
-        `${app.url}/`
-      );
-
-    assert.equal(
-      x.r.status,
-      200
-    );
-
-    assert.match(
-      x.text,
-      /Demo Anime/
-    );
-
-    x =
-      await get(
-        `${app.url}/show/demo-1?ep=0`
-      );
-
-    assert.equal(
-      x.r.status,
-      200
-    );
-
-    assert.match(
-      x.text,
-      /Test MP4/
-    );
-
-    assert.match(
-      x.text,
-      /hls\.js@1\.7\.2/
+    assert.ok(
+      manifest.catalogs.some(
+        catalog =>
+          catalog.id ===
+          'anime-search'
+      )
     );
   }
 );
 
 test(
-  'HTTP behavior is hardened',
+  'end-to-end add-on protocol with a mock provider',
   async t => {
 
-    const addon =
-      await startMockAddon();
+    const mock =
+      await startMockProvider();
 
     t.after(
       () =>
-        addon.server.close()
+        mock.server.close()
     );
 
     const app =
       await startApp({
         METADATA_ADDONS:
-          addon.url,
+          mock.endpoint,
 
-        STREAM_ADDONS: '',
-        SUBTITLE_ADDONS: ''
+        STREAM_ADDONS:
+          mock.endpoint,
+
+        SUBTITLE_ADDONS:
+          mock.endpoint
       });
 
     t.after(
@@ -492,113 +448,371 @@ test(
         app.server.close()
     );
 
-    let r =
-      await fetch(
-        `${app.url}/api/search`
+    let result =
+      await fetchJson(
+        `${app.base}/stremio/v1/manifest.json`
       );
 
     assert.equal(
-      r.status,
-      400
+      result.response.status,
+      200
     );
 
     assert.equal(
-      r.headers.get(
-        'access-control-allow-origin'
+      result.json.id,
+      'com.aniv3.bridge'
+    );
+
+    assert.ok(
+      result.json.resources.includes(
+        'stream'
+      )
+    );
+
+    assert.ok(
+      result.json.resources.includes(
+        'subtitles'
+      )
+    );
+
+    result =
+      await fetchJson(
+        `${app.base}/stremio/v1/catalog/anime/anime-trending.json`
+      );
+
+    assert.equal(
+      result.response.status,
+      200
+    );
+
+    assert.equal(
+      result.json.metas[0].id,
+      'kitsu:1'
+    );
+
+    result =
+      await fetchJson(
+        `${app.base}/stremio/v1/catalog/anime/anime-search/search=demo.json`
+      );
+
+    assert.equal(
+      result.response.status,
+      200
+    );
+
+    assert.equal(
+      result.json.metas[0].name,
+      'Demo Anime'
+    );
+
+    result =
+      await fetchJson(
+        `${app.base}/stremio/v1/meta/anime/kitsu%3A1.json`
+      );
+
+    assert.equal(
+      result.response.status,
+      200
+    );
+
+    assert.equal(
+      result.json.meta.videos.length,
+      2
+    );
+
+    result =
+      await fetchJson(
+        `${app.base}/stremio/v1/stream/anime/kitsu%3A1%3A1.json`
+      );
+
+    assert.equal(
+      result.response.status,
+      200
+    );
+
+    assert.equal(
+      result.json.streams.length,
+      1
+    );
+
+    assert.equal(
+      result.json.streams[0].url,
+      'https://example.com/video.mp4'
+    );
+
+    assert.equal(
+      result.json.streams[0]
+        ._aniv3Provider,
+      undefined
+    );
+
+    result =
+      await fetchJson(
+        `${app.base}/stremio/v1/subtitles/anime/kitsu%3A1%3A1.json`
+      );
+
+    assert.equal(
+      result.response.status,
+      200
+    );
+
+    assert.equal(
+      result.json.subtitles[0].lang,
+      'eng'
+    );
+
+    assert.equal(
+      result.json.subtitles[0]
+        ._aniv3Provider,
+      undefined
+    );
+  }
+);
+
+test(
+  'website routes consume the same integration layer',
+  async t => {
+
+    const mock =
+      await startMockProvider();
+
+    t.after(
+      () =>
+        mock.server.close()
+    );
+
+    const app =
+      await startApp({
+        METADATA_ADDONS:
+          mock.endpoint,
+
+        STREAM_ADDONS:
+          mock.endpoint,
+
+        SUBTITLE_ADDONS:
+          mock.endpoint
+      });
+
+    t.after(
+      () =>
+        app.server.close()
+    );
+
+    let result =
+      await fetchText(
+        `${app.base}/`
+      );
+
+    assert.equal(
+      result.response.status,
+      200
+    );
+
+    assert.match(
+      result.text,
+      /Demo Anime/
+    );
+
+    result =
+      await fetchText(
+        `${app.base}/search?q=demo`
+      );
+
+    assert.equal(
+      result.response.status,
+      200
+    );
+
+    assert.match(
+      result.text,
+      /Demo Anime/
+    );
+
+    result =
+      await fetchText(
+        `${app.base}/show/kitsu%3A1?ep=0`
+      );
+
+    assert.equal(
+      result.response.status,
+      200
+    );
+
+    assert.match(
+      result.text,
+      /Authorized Test Stream/
+    );
+
+    assert.match(
+      result.text,
+      /hls\.js@1\.7\.2/
+    );
+
+    result =
+      await fetchJson(
+        `${app.base}/healthz`
+      );
+
+    assert.equal(
+      result.response.status,
+      200
+    );
+
+    assert.equal(
+      result.json.status,
+      'ok'
+    );
+  }
+);
+
+test(
+  'empty stream configuration is valid and does not expose a proxy',
+  async t => {
+
+    const mock =
+      await startMockProvider();
+
+    t.after(
+      () =>
+        mock.server.close()
+    );
+
+    const app =
+      await startApp({
+        METADATA_ADDONS:
+          mock.endpoint,
+
+        STREAM_ADDONS:
+          '',
+
+        SUBTITLE_ADDONS:
+          ''
+      });
+
+    t.after(
+      () =>
+        app.server.close()
+    );
+
+    const manifest =
+      await fetchJson(
+        `${app.base}/manifest.json`
+      );
+
+    assert.equal(
+      manifest.json.resources.includes(
+        'stream'
       ),
-      '*'
+      false
     );
 
-    r =
-      await fetch(
-        `${app.url}/does-not-exist`
+    let result =
+      await fetchJson(
+        `${app.base}/stremio/v1/stream/anime/kitsu%3A1%3A1.json`
       );
 
     assert.equal(
-      r.status,
+      result.response.status,
+      200
+    );
+
+    assert.deepEqual(
+      result.json,
+      {
+        streams: []
+      }
+    );
+
+    result =
+      await fetchJson(
+        `${app.base}/proxy?origin=https://example.com`
+      );
+
+    assert.equal(
+      result.response.status,
       404
     );
+  }
+);
 
-    assert.equal(
-      (await r.json()).error,
-      'Not found'
+test(
+  'HTTP hardening behaves correctly',
+  async t => {
+
+    const mock =
+      await startMockProvider();
+
+    t.after(
+      () =>
+        mock.server.close()
     );
 
-    r =
-      await fetch(
-        `${app.url}/healthz`,
+    const app =
+      await startApp({
+        METADATA_ADDONS:
+          mock.endpoint
+      });
+
+    t.after(
+      () =>
+        app.server.close()
+    );
+
+    let result =
+      await fetchText(
+        `${app.base}/healthz`,
         {
-          method: 'POST'
+          method:
+            'POST'
         }
       );
 
     assert.equal(
-      r.status,
+      result.response.status,
       405
     );
 
     assert.equal(
-      r.headers.get('allow'),
+      result.response.headers.get(
+        'allow'
+      ),
       'GET, OPTIONS'
     );
 
-    r =
-      await fetch(
-        `${app.url}/healthz`,
+    result =
+      await fetchText(
+        `${app.base}/healthz`,
         {
-          method: 'OPTIONS'
+          method:
+            'OPTIONS'
         }
       );
 
     assert.equal(
-      r.status,
+      result.response.status,
       204
     );
-  }
-);
 
-test(
-  'website reports missing stream configuration cleanly',
-  async t => {
-
-    const addon =
-      await startMockAddon();
-
-    t.after(
-      () =>
-        addon.server.close()
-    );
-
-    const app =
-      await startApp({
-        METADATA_ADDONS:
-          addon.url,
-
-        STREAM_ADDONS: '',
-        SUBTITLE_ADDONS: '',
-
-        METADATA_TYPE:
-          'anime'
-      });
-
-    t.after(
-      () =>
-        app.server.close()
-    );
-
-    const x =
-      await get(
-        `${app.url}/show/demo-1?ep=0`
+    result =
+      await fetchJson(
+        `${app.base}/does-not-exist`
       );
 
     assert.equal(
-      x.r.status,
-      200
+      result.response.status,
+      404
     );
 
-    assert.match(
-      x.text,
-      /No stream sources were returned/
+    assert.equal(
+      result.json.error,
+      'Not found'
+    );
+
+    assert.equal(
+      result.response.headers.get(
+        'access-control-allow-origin'
+      ),
+      '*'
     );
   }
 );
