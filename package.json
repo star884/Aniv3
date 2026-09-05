@@ -1,16 +1,14 @@
 {
-  "name": "anime-stremio-stateless-proxy",
-  "version": "1.0.0",
-  "description": "CORS-Bypassing Pure Stateless Stremio Dashboard for Render",
+  "name": "aniv3",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Stateless anime web UI powered by Stremio-compatible add-ons.",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "axios": "^1.7.0",
-    "express": "^4.19.2"
+    "start": "node server.js",
+    "test": "node --test"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18"
   }
 }
