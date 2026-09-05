@@ -4,18 +4,41 @@ services:
     runtime: node
     plan: free
 
-    buildCommand: npm install
+    buildCommand: npm ci
     startCommand: npm start
 
     healthCheckPath: /healthz
+
     autoDeploy: true
 
     envVars:
+
       - key: NODE_VERSION
-        value: 22
+        value: 24.14.1
 
       - key: APP_NAME
         value: AniV3
+
+      - key: ADDON_ID
+        value: com.aniv3.bridge
+
+      - key: ADDON_NAME
+        value: AniV3 Anime Bridge
+
+      - key: ADDON_VERSION
+        value: 3.0.0
+
+      - key: ADDON_DESCRIPTION
+        value: Anime catalog and playback bridge for configured Stremio-compatible add-ons.
+
+      - key: CONTACT_EMAIL
+        sync: false
+
+      - key: PUBLIC_URL
+        sync: false
+
+      - key: LOGO_URL
+        sync: false
 
       - key: METADATA_ADDONS
         value: https://anime-kitsu.strem.fun
@@ -23,17 +46,20 @@ services:
       - key: METADATA_TYPE
         value: anime
 
-      - key: METADATA_CATALOG_ID
-        value: kitsu-anime-list
-
       - key: STREAM_ADDONS
         sync: false
 
       - key: SUBTITLE_ADDONS
-        sync: false
+        value: https://anime-kitsu.strem.fun
 
       - key: REQUEST_TIMEOUT_MS
         value: 8000
 
       - key: CACHE_TTL_MS
         value: 120000
+
+      - key: CACHE_MAX
+        value: 250
+
+      - key: HLS_JS_VERSION
+        value: 1.7.2
