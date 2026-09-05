@@ -1,19 +1,55 @@
-name: Continuous Deployment Pipeline
+name: Test and Deploy
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
+
+  pull_request:
+    branches: [main]
 
 jobs:
-  trigger-render-rebuild:
+
+  test:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Ping Webhook Endpoint
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Syntax check
+        run: node --check server.js
+
+      - name: Test
+        run: npm test
+
+
+  deploy:
+    if: github.event_name == 'push'
+
+    needs: test
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger Render deploy
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+
         run: |
-          if [ -z "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" ]; then
-            echo "Deployment webhook structural value missing. Configure repository secrets mapping."
-            exit 1
-          fi
-          curl -X POST -s "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
-          
+          test -n "$RENDER_DEPLOY_HOOK_URL"
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --request POST \
+            "$RENDER_DEPLOY_HOOK_URL"
