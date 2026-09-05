@@ -1,0 +1,19 @@
+name: Continuous Deployment Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  trigger-render-rebuild:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Webhook Endpoint
+        run: |
+          if [ -z "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" ]; then
+            echo "Deployment webhook structural value missing. Configure repository secrets mapping."
+            exit 1
+          fi
+          curl -X POST -s "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
+          
