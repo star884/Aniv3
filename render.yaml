@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: aniv3
+    runtime: node
+    plan: free
+
+    buildCommand: npm install
+    startCommand: npm start
+
+    healthCheckPath: /healthz
+    autoDeploy: true
+
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+
+      - key: APP_NAME
+        value: AniV3
+
+      - key: METADATA_ADDONS
+        value: https://anime-kitsu.strem.fun
+
+      - key: METADATA_TYPE
+        value: anime
+
+      - key: METADATA_CATALOG_ID
+        value: kitsu-anime-list
+
+      - key: STREAM_ADDONS
+        sync: false
+
+      - key: SUBTITLE_ADDONS
+        sync: false
+
+      - key: REQUEST_TIMEOUT_MS
+        value: 8000
+
+      - key: CACHE_TTL_MS
+        value: 120000
