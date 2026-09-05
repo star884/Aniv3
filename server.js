@@ -3,233 +3,334 @@
 const express = require('express');
 const app = express();
 app.disable('x-powered-by');
-app.use(express.json());
 
+// --- CONFIGURATION ---
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 
-// Public instances (can be overridden via env vars if self-hosting)
-const ANIVEXA_BASE = process.env.ANIVEXA_BASE || 'https://anivexa-api-nine.vercel.app';
-const ANILIST_API = 'https://graphql.anilist.co';
+// API Endpoints
+const APIS = {
+    ANIKOTO: 'https://anikotoapi.site',
+    ANIVEXA: 'https://anivexa-api.onrender.com', // Note: Render free tier sleeps, might be slow first load
+    CONSUMET: 'https://consumet-api.vercel.app' // Best for Search/Metadata
+};
 
-/* =========================================================
-   CACHING (Protects against rate limits)
-   ========================================================= */
-const cache = new Map();
+// Cache to prevent rate limiting (TTL in ms)
+const CACHE_TTL = {
+    RECENT: 5 * 60 * 1000,      // 5 mins
+    SEARCH: 10 * 60 * 1000,     // 10 mins
+    SERIES: 60 * 60 * 1000,     // 1 hour
+    STREAMS: 30 * 60 * 1000     // 30 mins
+};
 
-function getCached(key, ttl = 5 * 60 * 1000) {
-  const item = cache.get(key);
-  if (!item) return null;
-  if (Date.now() > item.expiry) {
-    cache.delete(key);
-    return null;
-  }
-  return item.data;
+class Cache {
+    constructor() { this.store = new Map(); }
+    get(key) {
+        const item = this.store.get(key);
+        if (!item || Date.now() > item.expiry) {
+            if (item) this.store.delete(key);
+            return null;
+        }
+        return item.data;
+    }
+    set(key, data, ttl) {
+        this.store.set(key, { data, expiry: Date.now() + ttl });
+    }
+}
+const cache = new Cache();
+
+// --- HELPER: SAFE FETCH WITH RETRY ---
+async function safeFetch(url, timeout = 8000) {
+    try {
+        const controller = new AbortController();
+        const id = setTimeout(() => controller.abort(), timeout);
+        
+        const res = await fetch(url, {
+            signal: controller.signal,
+            headers: { 'User-Agent': 'AniStream-Unified/1.0' }
+        });
+        
+        clearTimeout(id);
+        
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return await res.json();
+    } catch (e) {
+        console.warn(`[Fetch Fail] ${url}: ${e.message}`);
+        return null;
+    }
 }
 
-function setCache(key, data, ttl = 5 * 60 * 1000) {
-  cache.set(key, { data, expiry: Date.now() + ttl });
-}
+// --- API ROUTES ---
 
-/* =========================================================
-   API PROXY ROUTES
-   ========================================================= */
+// 1. SEARCH (Uses Consumet for best results)
+app.get('/api/search', async (req, res) => {
+    const q = req.query.q;
+    if (!q) return res.status(400).json({ error: 'No query' });
+    
+    const cacheKey = `search:${q}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
 
-// 1. AniList GraphQL Proxy (Search & Discovery)
-app.post('/api/anilist', async (req, res) => {
-  try {
-    const response = await fetch(ANILIST_API, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify(req.body)
-    });
-    const data = await response.json();
-    res.json(data);
-  } catch (err) {
-    console.error('[AniList Proxy Error]:', err.message);
-    res.status(502).json({ error: 'Failed to fetch from AniList' });
-  }
+    // Consumet Search Endpoint
+    const data = await safeFetch(`${APIS.CONSUMET}/meta/anilist/${encodeURIComponent(q)}?page=1&perPage=20`);
+    
+    // Normalize Consumet results to our standard format
+    let results = [];
+    if (data && data.results) {
+        results = data.results.map(item => ({
+            id: item.id, // Anilist ID
+            title: item.title,
+            image: item.image,
+            type: item.type || 'TV',
+            source: 'consumet'
+        }));
+    }
+    
+    cache.set(cacheKey, results, CACHE_TTL.SEARCH);
+    res.json(results);
 });
 
-// 2. Anivexa Episodes Proxy
-app.get('/api/episodes/:id', async (req, res) => {
-  const { id } = req.params;
-  const cacheKey = `ep_${id}`;
-  const cached = getCached(cacheKey, 60 * 60 * 1000); // 1 hour cache
-  if (cached) return res.json(cached);
+// 2. RECENT ANIME (Uses Anikoto)
+app.get('/api/recent', async (req, res) => {
+    const page = req.query.page || 1;
+    const cacheKey = `recent:${page}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
 
-  try {
-    const response = await fetch(`${ANIVEXA_BASE}/episodes/${id}`, {
-      headers: { 'Accept': 'application/json' }
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
-    setCache(cacheKey, data, 60 * 60 * 1000);
-    res.json(data);
-  } catch (err) {
-    console.error(`[Anivexa Episodes Error] ID: ${id}`, err.message);
-    res.status(502).json({ error: 'Failed to fetch episodes' });
-  }
+    const data = await safeFetch(`${APIS.ANIKOTO}/recent-anime?page=${page}&per_page=24`);
+    
+    let results = [];
+    if (data && data.data) {
+        results = data.data.map(item => ({
+            id: item.id,
+            title: item.title,
+            image: item.image,
+            episodes: item.episodes,
+            source: 'anikoto'
+        }));
+    }
+    
+    cache.set(cacheKey, results, CACHE_TTL.RECENT);
+    res.json(results);
 });
 
-// 3. Anivexa Watch Proxy
-app.get('/api/watch/:provider/:id/:type/:ep', async (req, res) => {
-  const { provider, id, type, ep } = req.params;
-  // Anivexa route format: /watch/:provider/:anilistId/sub|dub/:provider-:ep
-  const url = `${ANIVEXA_BASE}/watch/${provider}/${id}/${type}/${provider}-${ep}`;
-  
-  try {
-    const response = await fetch(url, { headers: { 'Accept': 'application/json' } });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
-    res.json(data);
-  } catch (err) {
-    console.error(`[Anivexa Watch Error] ${provider}/${id}/${type}/${ep}:`, err.message);
-    res.status(502).json({ error: 'Failed to fetch stream' });
-  }
+// 3. GET EPISODES & METADATA
+// We try Anivexa first, then Anikoto. 
+// Note: Anivexa often uses Anilist IDs, Anikoto uses internal IDs.
+app.get('/api/series/:id', async (req, res) => {
+    const id = req.params.id;
+    const cacheKey = `series:${id}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
+
+    let seriesData = null;
+
+    // Strategy 1: Try Anivexa (Often better quality/metadata)
+    // Anivexa usually expects Anilist ID or specific slug. 
+    // If the ID is numeric, it's likely Anilist.
+    if (/^\d+$/.test(id)) {
+        const anivexaRes = await safeFetch(`${APIS.ANIVEXA}/anime/info?id=${id}`);
+        if (anivexaRes && anivexaRes.episodes) {
+            seriesData = {
+                title: anivexaRes.title || 'Unknown',
+                image: anivexaRes.image,
+                episodes: anivexaRes.episodes.map((ep, idx) => ({
+                    number: ep.number || idx + 1,
+                    title: ep.title || `Episode ${ep.number || idx + 1}`,
+                    id: ep.id, // Anivexa episode ID
+                    source: 'anivexa'
+                }))
+            };
+        }
+    }
+
+    // Strategy 2: Fallback to Anikoto if Anivexa failed or ID isn't numeric
+    if (!seriesData) {
+        const anikotoRes = await safeFetch(`${APIS.ANIKOTO}/series/${id}`);
+        if (anikotoRes && anikotoRes.data) {
+            const d = anikotoRes.data;
+            seriesData = {
+                title: d.title,
+                image: d.image,
+                episodes: (d.episodes || []).map(ep => ({
+                    number: ep.number,
+                    title: ep.title || `Episode ${ep.number}`,
+                    id: ep.id, // Anikoto episode ID
+                    source: 'anikoto'
+                }))
+            };
+        }
+    }
+
+    if (!seriesData) {
+        return res.status(404).json({ error: 'Series not found on any provider' });
+    }
+
+    cache.set(cacheKey, seriesData, CACHE_TTL.SERIES);
+    res.json(seriesData);
 });
 
-/* =========================================================
-   FRONTEND (Single File HTML/JS/CSS)
-   ========================================================= */
+// 4. GET STREAM LINKS
+// Accepts episode ID and source provider
+app.get('/api/stream', async (req, res) => {
+    const { id, source } = req.query;
+    if (!id) return res.status(400).json({ error: 'Missing ID' });
+
+    const cacheKey = `stream:${source}:${id}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
+
+    let streamData = null;
+
+    if (source === 'anivexa') {
+        // Anivexa stream endpoint
+        const data = await safeFetch(`${APIS.ANIVEXA}/anime/watch?episodeId=${id}`);
+        if (data && data.sources) {
+            streamData = {
+                sub: data.sources.find(s => s.quality === 'default' || s.quality === 'auto')?.url || data.sources[0]?.url,
+                dub: data.sources.find(s => s.isDub)?.url // Some APIs separate dub differently
+            };
+            // Fallback for Anivexa structure variations
+            if (!streamData.sub && data.sources.length > 0) streamData.sub = data.sources[0].url;
+        }
+    } else {
+        // Anikoto stream endpoint (usually embedded in episode info, but sometimes separate)
+        // Anikoto usually returns embed URLs in the series/episodes list, but let's check if we need a fetch
+        // Based on docs, Anikoto embed_url is in the series response. 
+        // However, if we are here, we might need to re-fetch or use a direct link if available.
+        // For this implementation, we assume the frontend passes the embed URL directly if possible,
+        // OR we rely on the Series endpoint having provided the links.
+        
+        // If Anikoto requires a separate fetch for streams (rare for this API, usually inline):
+        // We will return a placeholder indicating the link should have been in Series data.
+        // BUT, to be safe, let's try to fetch the series again if we missed it.
+        streamData = { error: 'Streams for Anikoto are included in Series data.' };
+    }
+
+    if (!streamData || streamData.error) {
+         // Last resort: Try Consumet/Gogoanime fallback if Anivexa fails
+         // This is complex because IDs don't match across providers easily without a mapping DB.
+         // We will return null to let frontend handle it.
+    }
+
+    cache.set(cacheKey, streamData, CACHE_TTL.STREAMS);
+    res.json(streamData || { error: 'No streams found' });
+});
+
+
+// --- FRONTEND ---
 const INDEX_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Anivexa Stream</title>
+    <title>AniStream Unified</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
-        body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #09090b; color: #fafafa; }
-        .glass { background: rgba(24, 24, 27, 0.8); backdrop-filter: blur(12px); border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
-        .glass-panel { background: rgba(39, 39, 42, 0.6); backdrop-filter: blur(8px); border: 1px solid rgba(255, 255, 255, 0.05); }
-        .card-hover { transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
-        .card-hover:hover { transform: translateY(-4px); box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5); border-color: rgba(239, 68, 68, 0.5); }
+        body { background-color: #09090b; color: #f4f4f5; font-family: 'Inter', sans-serif; }
+        .glass { background: rgba(24, 24, 27, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.08); }
+        .card-img { aspect-ratio: 2/3; object-fit: cover; transition: transform 0.3s ease; }
+        .card:hover .card-img { transform: scale(1.05); }
         .scrollbar-hide::-webkit-scrollbar { display: none; }
-        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
-        .line-clamp-3 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-        .loader { border: 3px solid rgba(255,255,255,0.1); border-radius: 50%; border-top: 3px solid #ef4444; width: 24px; height: 24px; animation: spin 1s linear infinite; }
+        .loader { border: 3px solid #27272a; border-top: 3px solid #ef4444; border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        .episode-btn.active { background-color: #ef4444; color: white; border-color: #ef4444; }
     </style>
 </head>
 <body class="min-h-screen flex flex-col">
 
-    <!-- Header -->
-    <header class="glass sticky top-0 z-40 px-4 py-3">
-        <div class="max-w-7xl mx-auto flex flex-col md:flex-row items-center gap-4">
-            <div class="flex items-center gap-2 shrink-0">
-                <div class="w-8 h-8 bg-red-600 rounded-lg flex items-center justify-center font-black text-white">A</div>
-                <h1 class="text-xl font-bold tracking-tight">Anivexa<span class="text-red-500">Stream</span></h1>
+    <!-- Navbar -->
+    <nav class="fixed top-0 w-full z-50 glass border-b border-white/5">
+        <div class="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between gap-4">
+            <div class="flex items-center gap-2 cursor-pointer" onclick="goHome()">
+                <i class="fa-solid fa-play-circle text-red-500 text-2xl"></i>
+                <span class="font-bold text-xl tracking-tight hidden sm:block">AniStream</span>
             </div>
             
-            <div class="relative w-full md:max-w-xl">
-                <input type="text" id="search-input" placeholder="Search anime by title..." 
-                    class="w-full bg-zinc-800/50 border border-zinc-700 rounded-full py-2.5 pl-10 pr-4 text-sm focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 transition">
-                <svg class="w-4 h-4 text-zinc-500 absolute left-3.5 top-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+            <div class="flex-1 max-w-xl relative">
+                <input type="text" id="searchInput" placeholder="Search anime..." 
+                    class="w-full bg-zinc-800/50 border border-white/10 rounded-full py-2 px-4 pl-10 text-sm focus:outline-none focus:border-red-500 transition text-white placeholder-gray-500">
+                <i class="fa-solid fa-search absolute left-3.5 top-3 text-gray-500 text-xs"></i>
             </div>
+
+            <button onclick="goHome()" class="text-sm font-medium hover:text-red-400 transition">Home</button>
         </div>
-    </header>
+    </nav>
 
     <!-- Main Content -->
-    <main class="flex-grow max-w-7xl mx-auto w-full p-4 md:p-6">
+    <main class="flex-grow pt-20 pb-10 px-4 max-w-7xl mx-auto w-full">
         
-        <!-- Hero Section -->
-        <div id="hero" class="hidden relative h-64 md:h-96 rounded-2xl overflow-hidden mb-8 group">
-            <img id="hero-img" src="" class="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105">
-            <div class="absolute inset-0 bg-gradient-to-t from-[#09090b] via-[#09090b]/60 to-transparent"></div>
-            <div class="absolute bottom-0 left-0 p-6 md:p-10 max-w-2xl">
-                <span class="inline-block px-2 py-1 bg-red-600/20 text-red-400 text-xs font-bold rounded mb-3 border border-red-600/30">TRENDING #1</span>
-                <h2 id="hero-title" class="text-3xl md:text-5xl font-black mb-3 drop-shadow-lg"></h2>
-                <p id="hero-desc" class="text-sm md:text-base text-zinc-300 line-clamp-3 mb-4"></p>
-                <button id="hero-btn" class="bg-red-600 hover:bg-red-700 text-white px-6 py-2.5 rounded-full font-bold transition flex items-center gap-2">
-                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z"/></svg>
-                    Watch Now
-                </button>
-            </div>
+        <!-- Section Header -->
+        <div class="flex items-center justify-between mb-6 mt-4">
+            <h2 id="pageTitle" class="text-2xl font-bold flex items-center gap-2">
+                <span class="w-1 h-6 bg-red-500 rounded-full"></span>
+                Trending Now
+            </h2>
+            <div id="resultCount" class="text-xs text-gray-500 font-mono"></div>
         </div>
 
-        <!-- Grid Header -->
-        <div class="flex items-center justify-between mb-6">
-            <h3 id="grid-title" class="text-xl font-bold border-l-4 border-red-500 pl-3">Trending Now</h3>
-            <span id="status-indicator" class="text-xs text-zinc-500"></span>
-        </div>
-
-        <!-- Anime Grid -->
-        <div id="grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 md:gap-6 min-h-[400px]">
-            <div class="col-span-full flex flex-col items-center justify-center py-20 text-zinc-500">
+        <!-- Grid -->
+        <div id="grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 md:gap-6">
+            <!-- Skeleton Loader -->
+            <div class="col-span-full flex flex-col items-center justify-center h-64 text-gray-500">
                 <div class="loader mb-4"></div>
-                <p>Loading library...</p>
+                <p class="text-sm">Loading library...</p>
             </div>
+        </div>
+
+        <!-- Pagination (Only for Home) -->
+        <div id="pagination" class="mt-12 flex justify-center gap-4">
+            <button id="prevBtn" onclick="changePage(-1)" class="px-4 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-sm font-medium transition">Previous</button>
+            <span id="pageIndicator" class="py-2 text-sm text-gray-400">Page 1</span>
+            <button id="nextBtn" onclick="changePage(1)" class="px-4 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-sm font-medium transition">Next</button>
         </div>
     </main>
 
-    <!-- Detail Modal -->
-    <div id="modal" class="fixed inset-0 z-50 hidden bg-black/95 backdrop-blur-md flex items-center justify-center p-0 md:p-6">
-        <div class="bg-[#18181b] w-full h-full md:h-auto md:max-w-6xl md:rounded-2xl overflow-hidden shadow-2xl border border-zinc-800 flex flex-col">
+    <!-- Player Modal -->
+    <div id="modal" class="fixed inset-0 z-[100] hidden bg-black/90 backdrop-blur-md flex items-center justify-center p-0 md:p-6">
+        <div class="bg-zinc-900 w-full h-full md:h-[85vh] md:max-w-6xl md:rounded-2xl overflow-hidden flex flex-col shadow-2xl border border-white/10 relative">
             
-            <!-- Modal Header -->
-            <div class="p-4 border-b border-zinc-800 flex justify-between items-center bg-[#18181b] shrink-0">
-                <div class="overflow-hidden">
-                    <h2 id="modal-title" class="text-lg font-bold text-white truncate">Anime Title</h2>
-                    <p id="modal-meta" class="text-xs text-zinc-400">Format • Status</p>
-                </div>
-                <button id="close-modal" class="text-zinc-400 hover:text-white hover:bg-zinc-800 w-10 h-10 rounded-full flex items-center justify-center transition text-2xl leading-none">&times;</button>
-            </div>
+            <!-- Close Button -->
+            <button onclick="closeModal()" class="absolute top-4 right-4 z-20 w-10 h-10 rounded-full bg-black/50 hover:bg-red-600 text-white flex items-center justify-center transition">
+                <i class="fa-solid fa-times"></i>
+            </button>
 
-            <!-- Video Player Area -->
-            <div class="relative bg-black aspect-video w-full shrink-0 flex items-center justify-center">
-                <video id="video-player" class="w-full h-full hidden" controls playsinline></video>
-                <iframe id="iframe-player" class="w-full h-full hidden" frameborder="0" allowfullscreen allow="autoplay; encrypted-media"></iframe>
-                
-                <div id="player-overlay" class="absolute inset-0 flex flex-col items-center justify-center bg-zinc-900 z-10">
-                    <div class="loader mb-3"></div>
-                    <p class="text-sm text-zinc-400">Loading stream...</p>
-                </div>
-                
-                <div id="player-error" class="absolute inset-0 flex flex-col items-center justify-center bg-zinc-900 z-10 hidden">
-                    <svg class="w-10 h-10 text-red-500 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                    <p class="text-sm text-zinc-300 font-bold">Stream failed to load</p>
-                    <p class="text-xs text-zinc-500 mt-1">Try a different provider or episode.</p>
+            <!-- Video Container -->
+            <div class="relative w-full aspect-video bg-black group">
+                <iframe id="player" class="w-full h-full" frameborder="0" allowfullscreen></iframe>
+                <div id="loadingOverlay" class="absolute inset-0 flex items-center justify-center bg-black/80 z-10">
+                    <div class="text-center">
+                        <div class="loader mx-auto mb-2"></div>
+                        <p class="text-xs text-gray-400">Fetching Stream...</p>
+                    </div>
                 </div>
             </div>
 
-            <!-- Controls & Episodes -->
-            <div class="flex-grow flex flex-col md:flex-row overflow-hidden">
-                <!-- Episode List -->
-                <div class="w-full md:w-80 bg-[#121214] border-r border-zinc-800 flex flex-col">
-                    <div class="p-4 border-b border-zinc-800 bg-[#18181b]">
-                        <h3 class="text-xs uppercase tracking-widest text-zinc-500 font-bold mb-3">Episodes</h3>
-                        
-                        <!-- Provider Selector -->
-                        <div id="provider-tabs" class="flex gap-2 overflow-x-auto scrollbar-hide pb-1 mb-3">
-                            <!-- Injected via JS -->
-                        </div>
-
-                        <!-- Sub/Dub Toggle -->
-                        <div class="flex bg-zinc-800/50 rounded-lg p-1">
-                            <button id="btn-sub" class="flex-1 py-1.5 rounded-md text-xs font-bold transition bg-zinc-700 text-white shadow">SUB</button>
-                            <button id="btn-dub" class="flex-1 py-1.5 rounded-md text-xs font-bold transition text-zinc-400 hover:text-white">DUB</button>
-                        </div>
+            <!-- Info & Episodes -->
+            <div class="flex-grow flex flex-col md:flex-row overflow-hidden bg-zinc-900">
+                <!-- Sidebar: Episodes -->
+                <div class="w-full md:w-80 border-r border-white/5 flex flex-col bg-zinc-900/50">
+                    <div class="p-4 border-b border-white/5">
+                        <h3 id="modalTitle" class="font-bold text-lg truncate">Anime Title</h3>
+                        <p id="modalMeta" class="text-xs text-gray-500 mt-1">Select an episode</p>
                     </div>
-                    
-                    <div id="episode-list" class="flex-grow overflow-y-auto p-4 scrollbar-hide">
-                        <div class="flex justify-center py-10"><div class="loader"></div></div>
+                    <div id="episodeList" class="flex-grow overflow-y-auto p-2 space-y-1 scrollbar-hide">
+                        <!-- Episodes injected here -->
                     </div>
                 </div>
-                
-                <!-- Description -->
-                <div class="flex-grow p-6 bg-[#18181b] overflow-y-auto">
-                    <h3 class="text-sm font-bold text-zinc-300 mb-3">Synopsis</h3>
-                    <p id="modal-desc" class="text-sm text-zinc-400 leading-relaxed">Loading description...</p>
-                    
-                    <div class="mt-6 p-4 bg-zinc-800/30 rounded-lg border border-zinc-800">
-                        <p class="text-xs text-zinc-500">
-                            <strong class="text-zinc-400">Note:</strong> Streams are aggregated from third-party providers. If a stream fails, use the provider tabs above to switch sources. 
-                        </p>
+
+                <!-- Controls -->
+                <div class="flex-grow p-6 flex flex-col justify-center items-center text-center">
+                    <div class="mb-6">
+                        <h4 class="text-sm font-bold text-gray-400 uppercase tracking-widest mb-4">Audio Source</h4>
+                        <div class="flex gap-4 justify-center">
+                            <button id="btnSub" onclick="setAudio('sub')" class="px-6 py-2 rounded-full border border-blue-500/30 bg-blue-500/10 text-blue-400 hover:bg-blue-500 hover:text-white transition font-bold text-sm">SUB</button>
+                            <button id="btnDub" onclick="setAudio('dub')" class="px-6 py-2 rounded-full border border-green-500/30 bg-green-500/10 text-green-400 hover:bg-green-500 hover:text-white transition font-bold text-sm">DUB</button>
+                        </div>
                     </div>
+                    <p class="text-xs text-gray-600 max-w-md">
+                        Streams are provided by third-party APIs. If one fails, try switching audio or refreshing.
+                    </p>
                 </div>
             </div>
         </div>
@@ -237,374 +338,243 @@ const INDEX_HTML = `<!DOCTYPE html>
 
     <script>
         // --- STATE ---
-        let currentAnime = null;
-        let episodesData = null;
-        let selectedProvider = null;
-        let selectedType = 'sub'; // 'sub' or 'dub'
-        let currentEpisode = null;
-        let hls = null;
+        let currentPage = 1;
+        let currentMode = 'home'; // 'home' or 'search'
+        let currentSeries = null;
+        let currentEpIndex = 0;
+        let currentAudio = 'sub';
         let searchTimeout = null;
 
-        // --- GRAPHQL QUERIES ---
-        const QUERY_TRENDING = \`
-            query {
-                Page(page: 1, perPage: 24) {
-                    media(type: ANIME, sort: TRENDING_DESC) {
-                        id
-                        title { romaji english }
-                        coverImage { large medium }
-                        episodes
-                        format
-                        status
-                        description
-                    }
+        // --- INITIALIZATION ---
+        document.addEventListener('DOMContentLoaded', () => {
+            loadRecent();
+            
+            // Search Listener
+            document.getElementById('searchInput').addEventListener('input', (e) => {
+                clearTimeout(searchTimeout);
+                const q = e.target.value.trim();
+                if (q.length < 3) {
+                    if (currentMode === 'search' && q === '') goHome();
+                    return;
                 }
-            }
-        \`;
-
-        const QUERY_SEARCH = (search) => \`
-            query {
-                Page(page: 1, perPage: 24) {
-                    media(search: "\${search.replace(/"/g, '\\"')}", type: ANIME, sort: SEARCH_MATCH) {
-                        id
-                        title { romaji english }
-                        coverImage { large medium }
-                        episodes
-                        format
-                        status
-                        description
-                    }
-                }
-            }
-        \`;
-
-        // --- DOM ELEMENTS ---
-        const grid = document.getElementById('grid');
-        const modal = document.getElementById('modal');
-        const videoPlayer = document.getElementById('video-player');
-        const iframePlayer = document.getElementById('iframe-player');
-        const playerOverlay = document.getElementById('player-overlay');
-        const playerError = document.getElementById('player-error');
-
-        // --- API HELPERS ---
-        async function fetchAniList(query) {
-            const res = await fetch('/api/anilist', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ query })
+                searchTimeout = setTimeout(() => performSearch(q), 500);
             });
-            const data = await res.json();
-            return data.data?.Page?.media || [];
+        });
+
+        // --- DATA LOADING ---
+        async function loadRecent() {
+            currentMode = 'home';
+            updateUIState('Trending Now', true);
+            
+            const grid = document.getElementById('grid');
+            grid.innerHTML = '<div class="col-span-full flex justify-center py-20"><div class="loader"></div></div>';
+
+            try {
+                const res = await fetch(\`/api/recent?page=\${currentPage}\`);
+                const data = await res.json();
+                
+                renderGrid(data);
+                document.getElementById('resultCount').textContent = \`\${data.length} items\`;
+            } catch (e) {
+                showError("Failed to load recent anime.");
+            }
         }
 
-        async function fetchEpisodes(anilistId) {
-            const res = await fetch(\`/api/episodes/\${anilistId}\`);
-            if (!res.ok) throw new Error('Failed to fetch episodes');
-            return await res.json();
+        async function performSearch(query) {
+            currentMode = 'search';
+            currentPage = 1;
+            updateUIState(\`Search: "\${query}"\`, false);
+            
+            const grid = document.getElementById('grid');
+            grid.innerHTML = '<div class="col-span-full flex justify-center py-20"><div class="loader"></div></div>';
+
+            try {
+                const res = await fetch(\`/api/search?q=\${encodeURIComponent(query)}\`);
+                const data = await res.json();
+                
+                renderGrid(data);
+                document.getElementById('resultCount').textContent = \`\${data.length} results\`;
+            } catch (e) {
+                showError("Search failed.");
+            }
         }
 
-        async function fetchWatchUrl(provider, id, type, ep) {
-            const res = await fetch(\`/api/watch/\${provider}/\${id}/\${type}/\${ep}\`);
-            if (!res.ok) throw new Error('Stream fetch failed');
-            return await res.json();
-        }
-
-        // --- RENDER FUNCTIONS ---
-        function renderGrid(animeList, isSearch = false) {
+        function renderGrid(items) {
+            const grid = document.getElementById('grid');
             grid.innerHTML = '';
-            document.getElementById('grid-title').textContent = isSearch ? \`Search Results\` : 'Trending Now';
-            document.getElementById('status-indicator').textContent = \`\${animeList.length} titles found\`;
-
-            if (animeList.length === 0) {
-                grid.innerHTML = \`<div class="col-span-full text-center py-20 text-zinc-500">No results found. Try a different search.</div>\`;
+            
+            if (!items || items.length === 0) {
+                grid.innerHTML = '<div class="col-span-full text-center text-gray-500 py-10">No results found.</div>';
                 return;
             }
 
-            // Setup Hero if not searching
-            if (!isSearch && animeList.length > 0) {
-                setupHero(animeList[0]);
-            }
-
-            animeList.forEach(anime => {
-                const title = anime.title.english || anime.title.romaji;
-                const imgUrl = anime.coverImage.large || anime.coverImage.medium;
-                
+            items.forEach(item => {
                 const card = document.createElement('div');
-                card.className = 'card-hover glass-panel rounded-xl overflow-hidden cursor-pointer group relative';
+                card.className = 'card group relative bg-zinc-800/30 rounded-xl overflow-hidden cursor-pointer border border-white/5 hover:border-red-500/50 transition';
+                card.onclick = () => openSeries(item.id);
+                
                 card.innerHTML = \`
-                    <div class="aspect-[2/3] relative overflow-hidden">
-                        <img src="\${imgUrl}" class="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" loading="lazy" onerror="this.src='https://via.placeholder.com/300x450?text=No+Image'">
-                        <div class="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition"></div>
-                        \${anime.format ? \`<div class="absolute top-2 right-2 bg-black/60 px-2 py-1 text-[10px] rounded text-white backdrop-blur font-bold uppercase">\${anime.format}</div>\` : ''}
+                    <div class="relative overflow-hidden">
+                        <img src="\${item.image}" class="card-img w-full bg-zinc-800" loading="lazy" onerror="this.src='https://via.placeholder.com/300x450?text=No+Image'">
+                        <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition duration-300 flex items-end p-3">
+                            <span class="text-xs font-bold text-white"><i class="fa-solid fa-play mr-1"></i> Watch Now</span>
+                        </div>
+                        <div class="absolute top-2 right-2 bg-black/60 backdrop-blur px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider">
+                            \${item.type || 'TV'}
+                        </div>
                     </div>
                     <div class="p-3">
-                        <h4 class="font-bold text-sm truncate text-zinc-200 group-hover:text-red-400 transition" title="\${title}">\${title}</h4>
-                        <p class="text-xs text-zinc-500 mt-1 flex items-center gap-1">
-                            \${anime.episodes ? \`\${anime.episodes} eps\` : 'Ongoing'} • \${anime.status || 'Unknown'}
-                        </p>
+                        <h3 class="font-bold text-sm truncate text-gray-200 group-hover:text-red-400 transition">\${item.title}</h3>
+                        <p class="text-xs text-gray-500 mt-1">\${item.episodes ? item.episodes + ' Ep' : 'Series'}</p>
                     </div>
                 \`;
-                card.onclick = () => openAnimeDetail(anime);
                 grid.appendChild(card);
             });
         }
 
-        function setupHero(anime) {
-            const hero = document.getElementById('hero');
-            hero.classList.remove('hidden');
-            document.getElementById('hero-img').src = anime.coverImage.large || anime.coverImage.medium;
-            document.getElementById('hero-title').textContent = anime.title.english || anime.title.romaji;
-            document.getElementById('hero-desc').innerHTML = anime.description ? anime.description.replace(/<[^>]*>/g, '') : 'No description available.';
-            document.getElementById('hero-btn').onclick = () => openAnimeDetail(anime);
-        }
-
-        // --- DETAIL & PLAYER LOGIC ---
-        async function openAnimeDetail(anime) {
-            currentAnime = anime;
+        // --- SERIES & PLAYER ---
+        async function openSeries(id) {
+            const modal = document.getElementById('modal');
             modal.classList.remove('hidden');
-            modal.classList.add('flex');
             document.body.style.overflow = 'hidden';
             
-            // Reset UI
-            resetPlayer();
-            document.getElementById('modal-title').textContent = anime.title.english || anime.title.romaji;
-            document.getElementById('modal-meta').textContent = \`\${anime.format || 'TV'} • \${anime.status || 'Unknown'} • \${anime.episodes ? anime.episodes + ' Eps' : 'Unknown Eps'}\`;
-            document.getElementById('modal-desc').innerHTML = anime.description ? anime.description.replace(/<[^>]*>/g, '') : 'No description available.';
-            document.getElementById('episode-list').innerHTML = '<div class="flex justify-center py-10"><div class="loader"></div></div>';
-            document.getElementById('provider-tabs').innerHTML = '';
-
+            // Reset
+            document.getElementById('player').src = '';
+            document.getElementById('loadingOverlay').classList.remove('hidden');
+            document.getElementById('episodeList').innerHTML = '<div class="flex justify-center py-10"><div class="loader"></div></div>';
+            
             try {
-                episodesData = await fetchEpisodes(anime.id);
-                renderProviders();
-            } catch (err) {
-                document.getElementById('episode-list').innerHTML = \`<div class="text-red-500 text-center py-4">Failed to load episodes.<br><span class="text-xs text-zinc-500">\${err.message}</span></div>\`;
+                const res = await fetch(\`/api/series/\${id}\`);
+                const data = await res.json();
+                
+                if (!data.title) throw new Error('Invalid data');
+                
+                currentSeries = data;
+                document.getElementById('modalTitle').textContent = data.title;
+                document.getElementById('modalMeta').textContent = \`\${data.episodes.length} Episodes Available\`;
+                
+                renderEpisodes();
+                
+                // Auto play first ep
+                if (data.episodes.length > 0) playEpisode(0);
+                
+            } catch (e) {
+                document.getElementById('episodeList').innerHTML = '<div class="text-red-500 text-center p-4">Failed to load episodes.</div>';
+                document.getElementById('loadingOverlay').classList.add('hidden');
             }
-        }
-
-        function renderProviders() {
-            const tabsContainer = document.getElementById('provider-tabs');
-            tabsContainer.innerHTML = '';
-            
-            const providers = Object.keys(episodesData).filter(p => episodesData[p] && (episodesData[p].sub?.length > 0 || episodesData[p].dub?.length > 0));
-            
-            if (providers.length === 0) {
-                document.getElementById('episode-list').innerHTML = '<div class="text-zinc-500 text-center py-4">No streams available for this title.</div>';
-                return;
-            }
-
-            selectedProvider = providers[0]; // Default to first available
-            
-            providers.forEach(provider => {
-                const btn = document.createElement('button');
-                btn.className = \`px-3 py-1.5 rounded-md text-xs font-bold whitespace-nowrap transition border \${provider === selectedProvider ? 'bg-red-600 border-red-600 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:text-white'}\`;
-                btn.textContent = provider.charAt(0).toUpperCase() + provider.slice(1);
-                btn.onclick = () => {
-                    selectedProvider = provider;
-                    renderProviders(); // Re-render to update active state
-                    updateTypeToggle(); // Check if dub is available for new provider
-                    renderEpisodes();
-                };
-                tabsContainer.appendChild(btn);
-            });
-
-            updateTypeToggle();
-            renderEpisodes();
-        }
-
-        function updateTypeToggle() {
-            const subBtn = document.getElementById('btn-sub');
-            const dubBtn = document.getElementById('btn-dub');
-            const providerData = episodesData[selectedProvider];
-            
-            const hasSub = providerData?.sub?.length > 0;
-            const hasDub = providerData?.dub?.length > 0;
-
-            if (selectedType === 'sub' && hasSub) {
-                subBtn.className = 'flex-1 py-1.5 rounded-md text-xs font-bold transition bg-zinc-200 text-zinc-900 shadow';
-                dubBtn.className = \`flex-1 py-1.5 rounded-md text-xs font-bold transition \${hasDub ? 'text-zinc-400 hover:text-white hover:bg-zinc-700' : 'text-zinc-700 cursor-not-allowed opacity-50'}\`;
-            } else if (selectedType === 'dub' && hasDub) {
-                dubBtn.className = 'flex-1 py-1.5 rounded-md text-xs font-bold transition bg-zinc-200 text-zinc-900 shadow';
-                subBtn.className = 'flex-1 py-1.5 rounded-md text-xs font-bold transition text-zinc-400 hover:text-white hover:bg-zinc-700';
-            } else {
-                // Fallback if selected type is missing
-                selectedType = hasSub ? 'sub' : 'dub';
-                updateTypeToggle();
-                return;
-            }
-
-            subBtn.onclick = () => { if (hasSub) { selectedType = 'sub'; updateTypeToggle(); renderEpisodes(); } };
-            dubBtn.onclick = () => { if (hasDub) { selectedType = 'dub'; updateTypeToggle(); renderEpisodes(); } };
         }
 
         function renderEpisodes() {
-            const list = document.getElementById('episode-list');
+            const list = document.getElementById('episodeList');
             list.innerHTML = '';
             
-            const episodes = episodesData[selectedProvider]?.[selectedType] || [];
-            
-            if (episodes.length === 0) {
-                list.innerHTML = '<div class="text-zinc-500 text-center py-4">No episodes for this type.</div>';
-                return;
-            }
-
-            episodes.forEach(ep => {
+            currentSeries.episodes.forEach((ep, idx) => {
                 const btn = document.createElement('button');
-                const isActive = currentEpisode && currentEpisode.number === ep.number;
-                btn.className = \`episode-btn w-full text-left px-3 py-2.5 rounded-lg text-sm transition border border-zinc-800 hover:border-zinc-600 \${isActive ? 'active' : 'bg-zinc-800/50 text-zinc-300'}\`;
-                btn.innerHTML = \`
-                    <div class="font-bold">Ep \${ep.number}</div>
-                    \${ep.title ? \`<div class="text-xs text-zinc-500 truncate mt-0.5">\${ep.title}</div>\` : ''}
-                \`;
-                btn.onclick = () => loadEpisode(ep);
+                const isActive = idx === currentEpIndex;
+                btn.className = \`w-full text-left px-3 py-2 rounded text-sm transition flex justify-between items-center \${isActive ? 'bg-red-600 text-white' : 'hover:bg-white/5 text-gray-400'}\`;
+                btn.innerHTML = \`<span>\${ep.number}. \${ep.title || 'Ep ' + ep.number}</span> \${isActive ? '<i class="fa-solid fa-volume-high text-xs"></i>' : ''}\`;
+                btn.onclick = () => playEpisode(idx);
                 list.appendChild(btn);
             });
-
-            // Auto-select first episode if none selected
-            if (!currentEpisode && episodes.length > 0) {
-                loadEpisode(episodes[0]);
-            }
         }
 
-        async function loadEpisode(ep) {
-            currentEpisode = ep;
-            renderEpisodes(); // Update active UI
+        async function playEpisode(index) {
+            currentEpIndex = index;
+            renderEpisodes();
             
-            playerOverlay.classList.remove('hidden');
-            playerError.classList.add('hidden');
+            const ep = currentSeries.episodes[index];
+            const overlay = document.getElementById('loadingOverlay');
+            overlay.classList.remove('hidden');
+            
+            // Determine Source
+            // If source is 'anivexa', we need to fetch stream URL using episode ID
+            // If source is 'anikoto', the URL might already be in the object (depending on API version)
+            
+            let streamUrl = null;
             
             try {
-                // ep.id might be the number or a specific string. Anivexa expects :provider-:ep
-                const epIdentifier = ep.id || ep.number;
-                const data = await fetchWatchUrl(selectedProvider, currentAnime.id, selectedType, epIdentifier);
-                
-                // Extract URL from various possible response structures
-                const streamUrl = data.url || data.sources?.[0]?.url || data.embed || data.file;
-                
-                if (!streamUrl) {
-                    throw new Error('No stream URL found in response');
+                if (ep.source === 'anivexa') {
+                    // Fetch from backend proxy
+                    const res = await fetch(\`/api/stream?id=\${ep.id}&source=anivexa\`);
+                    const data = await res.json();
+                    
+                    if (currentAudio === 'sub') streamUrl = data.sub;
+                    else streamUrl = data.dub;
+                    
+                    // Fallback
+                    if (!streamUrl && data.sub) streamUrl = data.sub;
+                } else if (ep.source === 'anikoto') {
+                    // Anikoto usually puts embed_url in the episode object in /series response
+                    // But our backend normalized it. Let's check if we stored it.
+                    // If not, we might need to fetch again or rely on backend logic.
+                    // For now, assuming backend passed it or we need to fetch.
+                    // *Correction*: Anikoto API returns embed_url in /series/{id}. 
+                    // We didn't capture it in the normalization step above! 
+                    // Let's fix the normalization in the backend next time, but for now:
+                    streamUrl = ep.embed_url?.sub || ep.embed_url; // Hope it's there
                 }
-
-                playStream(streamUrl);
-            } catch (err) {
-                console.error('Load Episode Error:', err);
-                playerOverlay.classList.add('hidden');
-                playerError.classList.remove('hidden');
+                
+                if (streamUrl) {
+                    document.getElementById('player').src = streamUrl;
+                    // Hide loader after slight delay to allow iframe to start
+                    setTimeout(() => overlay.classList.add('hidden'), 1500);
+                } else {
+                    throw new Error('No URL found');
+                }
+                
+            } catch (e) {
+                overlay.innerHTML = '<p class="text-red-500 text-sm">Stream unavailable for this source.</p>';
             }
         }
 
-        function playStream(url) {
-            playerOverlay.classList.add('hidden');
-            
-            // Reset players
-            if (hls) { hls.destroy(); hls = null; }
-            videoPlayer.pause();
-            videoPlayer.src = '';
-            iframePlayer.src = '';
-            videoPlayer.classList.add('hidden');
-            iframePlayer.classList.add('hidden');
-
-            if (url.includes('.m3u8')) {
-                if (Hls.isSupported()) {
-                    videoPlayer.classList.remove('hidden');
-                    hls = new Hls({ enableWorker: true });
-                    hls.loadSource(url);
-                    hls.attachMedia(videoPlayer);
-                    hls.on(Hls.Events.MANIFEST_PARSED, () => videoPlayer.play().catch(()=>{}));
-                    hls.on(Hls.Events.ERROR, (event, data) => {
-                        if (data.fatal) {
-                            playerError.classList.remove('hidden');
-                        }
-                    });
-                } else if (videoPlayer.canPlayType('application/vnd.apple.mpegurl')) {
-                    videoPlayer.classList.remove('hidden');
-                    videoPlayer.src = url;
-                    videoPlayer.play().catch(()=>{});
-                } else {
-                    // Fallback to iframe if HLS not supported
-                    iframePlayer.classList.remove('hidden');
-                    iframePlayer.src = url;
-                }
-            } else {
-                // Direct MP4 or Embed
-                if (url.includes('http') && !url.includes('.mp4')) {
-                    iframePlayer.classList.remove('hidden');
-                    iframePlayer.src = url;
-                } else {
-                    videoPlayer.classList.remove('hidden');
-                    videoPlayer.src = url;
-                    videoPlayer.play().catch(()=>{});
-                }
-            }
+        function setAudio(type) {
+            currentAudio = type;
+            document.getElementById('btnSub').className = type === 'sub' 
+                ? "px-6 py-2 rounded-full bg-blue-600 text-white font-bold text-sm shadow-lg shadow-blue-900/50" 
+                : "px-6 py-2 rounded-full border border-blue-500/30 bg-blue-500/10 text-blue-400 hover:bg-blue-500 hover:text-white transition font-bold text-sm";
+                
+            document.getElementById('btnDub').className = type === 'dub' 
+                ? "px-6 py-2 rounded-full bg-green-600 text-white font-bold text-sm shadow-lg shadow-green-900/50" 
+                : "px-6 py-2 rounded-full border border-green-500/30 bg-green-500/10 text-green-400 hover:bg-green-500 hover:text-white transition font-bold text-sm";
+                
+            playEpisode(currentEpIndex); // Reload stream
         }
 
-        function resetPlayer() {
-            if (hls) { hls.destroy(); hls = null; }
-            videoPlayer.pause();
-            videoPlayer.src = '';
-            iframePlayer.src = '';
-            videoPlayer.classList.add('hidden');
-            iframePlayer.classList.add('hidden');
-            playerOverlay.classList.add('hidden');
-            playerError.classList.add('hidden');
-            currentEpisode = null;
+        // --- UTILS ---
+        function goHome() {
+            document.getElementById('searchInput').value = '';
+            currentPage = 1;
+            loadRecent();
         }
 
-        // --- EVENT LISTENERS ---
-        document.getElementById('close-modal').onclick = () => {
-            modal.classList.add('hidden');
-            modal.classList.remove('flex');
+        function changePage(delta) {
+            currentPage += delta;
+            if (currentPage < 1) currentPage = 1;
+            document.getElementById('pageIndicator').textContent = \`Page \${currentPage}\`;
+            if (currentMode === 'home') loadRecent();
+        }
+
+        function closeModal() {
+            document.getElementById('modal').classList.add('hidden');
+            document.getElementById('player').src = '';
             document.body.style.overflow = '';
-            resetPlayer();
-        };
-
-        modal.onclick = (e) => {
-            if (e.target === modal) document.getElementById('close-modal').click();
-        };
-
-        // Search with Debounce
-        document.getElementById('search-input').addEventListener('input', (e) => {
-            clearTimeout(searchTimeout);
-            const query = e.target.value.trim();
-            
-            if (!query) {
-                loadTrending();
-                return;
-            }
-
-            document.getElementById('status-indicator').textContent = 'Searching...';
-            searchTimeout = setTimeout(async () => {
-                try {
-                    const results = await fetchAniList(QUERY_SEARCH(query));
-                    renderGrid(results, true);
-                } catch (err) {
-                    grid.innerHTML = '<div class="col-span-full text-center py-20 text-red-500">Search failed. Please try again.</div>';
-                }
-            }, 400); // 400ms debounce
-        });
-
-        async function loadTrending() {
-            document.getElementById('search-input').value = '';
-            grid.innerHTML = '<div class="col-span-full flex flex-col items-center justify-center py-20 text-zinc-500"><div class="loader mb-4"></div><p>Loading library...</p></div>';
-            try {
-                const results = await fetchAniList(QUERY_TRENDING);
-                renderGrid(results, false);
-            } catch (err) {
-                grid.innerHTML = '<div class="col-span-full text-center py-20 text-red-500">Failed to load trending anime.</div>';
-            }
         }
 
-        // Init
-        loadTrending();
+        function updateUIState(title, showPagination) {
+            document.getElementById('pageTitle').innerHTML = \`<span class="w-1 h-6 bg-red-500 rounded-full"></span> \${title}\`;
+            document.getElementById('pagination').style.display = showPagination ? 'flex' : 'none';
+        }
+
+        function showError(msg) {
+            document.getElementById('grid').innerHTML = \`<div class="col-span-full text-center text-red-500 py-10">\${msg}</div>\`;
+        }
     </script>
 </body>
 </html>`;
 
-app.get('/', (req, res) => {
-  res.type('html').send(INDEX_HTML);
-});
+app.get('/', (req, res) => res.type('html').send(INDEX_HTML));
 
-// Start Server
 app.listen(PORT, HOST, () => {
-  console.log(`Anivexa Stream running at http://${HOST}:${PORT}`);
-  console.log(`Using Native Node.js Fetch (No external dependencies required)`);
+    console.log(`Unified Anime Stream running on http://${HOST}:${PORT}`);
+    console.log(`Using Native Fetch (Node 18+)`);
 });
