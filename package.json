@@ -1,0 +1,13 @@
+{
+  "name": "anime-stream-engine",
+  "version": "1.0.0",
+  "description": "Node.js backend proxy wrapper for Stremio anime streaming",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "node-fetch": "^2.7.0"
+  }
+}
