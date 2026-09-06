@@ -2,51 +2,129 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Custom Anime Stream Web Client</title>
-    <!-- Include a modern web video player like Plyr -->
-    <link rel="stylesheet" href="https://plyr.io" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Instant Non-Torrent Stream Portal</title>
+    <!-- Video.js Styles -->
+    <link href="https://zencdn.net" rel="stylesheet" />
+    <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; background: #111; color: #fff; margin: 0; padding: 20px; }
+        .container { max-width: 900px; margin: 0 auto; }
+        h1 { color: #e50914; text-align: center; }
+        .search-box { display: flex; gap: 10px; margin-bottom: 20px; justify-content: center; }
+        input, button { padding: 12px; font-size: 16px; border: none; border-radius: 4px; }
+        input { width: 60%; background: #222; color: #fff; }
+        button { background: #e50914; color: #fff; cursor: pointer; font-weight: bold; }
+        button:hover { background: #b80710; }
+        .player-container { margin-top: 20px; display: none; background: #000; border-radius: 8px; overflow: hidden; }
+        #stream-list { list-style: none; padding: 0; }
+        #stream-list li { background: #222; margin: 8px 0; padding: 15px; border-radius: 4px; cursor: pointer; transition: 0.2s; }
+        #stream-list li:hover { background: #333; border-left: 5px solid #e50914; }
+        .status { text-align: center; color: #aaa; margin: 10px 0; }
+    </style>
 </head>
 <body>
 
-    <div style="max-width: 800px; margin: 20px auto; text-align: center;">
-        <h2>Custom Anime Stream UI</h2>
-        <button id="loadStream">Play Episode 1 (via Addon API)</button>
-        <br><br>
-        
-        <!-- Video Container -->
-        <video id="player" playsinline controls></video>
+<div class="container">
+    <h1>Anime & Media Stream Portal</h1>
+    
+    <div class="search-box">
+        <!-- Default IMDB ID provided for testing: Attack on Titan (tt2560146) -->
+        <input type="text" id="imdb-id" value="tt2560146" placeholder="Enter IMDb ID (e.g., tt2560146)">
+        <button onclick="fetchStreams()">Find Streams</button>
     </div>
 
-    <script src="https://plyr.io"></script>
-    <script>
-        const player = new Plyr('#player');
+    <div class="status" id="status-text"></div>
 
-        document.getElementById('loadStream').addEventListener('click', async () => {
-            // 1. Target a public non-torrent stream addon endpoint 
-            // Syntax: https://[addon-domain]/stream/{type}/{id}.json
-            const ADDON_STREAM_API = "https://superflixapi.xyz"; 
+    <ul id="stream-list"></ul>
 
-            try {
-                // 2. Fetch the JSON stream payload directly from the Stremio Addon
-                const response = await fetch(ADDON_STREAM_API);
-                const data = await response.json();
+    <div class="player-container" id="player-wrapper">
+        <video id="my-video" class="video-js vjs-default-skin vjs-big-play-centered" controls preload="auto" width="900" height="506">
+            <p class="vjs-no-js">To view this video please enable JavaScript, and consider upgrading to a web browser that supports HTML5 video.</p>
+        </video>
+    </div>
+</div>
 
-                if (data.streams && data.streams.length > 0) {
-                    // 3. Extract the direct HTTP/HLS stream URL (preferring non-torrent links)
-                    const directStreamUrl = data.streams[0].url; 
-                    
-                    console.log("Found direct web stream:", directStreamUrl);
+<!-- Video.js Framework Script -->
+<script src="https://zencdn.net"></script>
+<script>
+    // Initialize Video.js Player instance
+    const player = videojs('my-video');
 
-                    // 4. Feed the URL directly into your website's HTML5 Player
-                    document.getElementById('player').src = directStreamUrl;
-                    player.play();
-                } else {
-                    alert("No direct web streams found for this ID.");
-                }
-            } catch (error) {
-                console.error("Error communicating with Stremio Addon API:", error);
+    // Using a trusted, top-10 HTTP direct-stream scraper proxy endpoint 
+    // Shluflix / Superflix style mirror routing
+    const ADDON_BASE_URL = "https://shluflix.xyz"; 
+
+    async function fetchStreams() {
+        const imdbId = document.getElementById('imdb-id').value.trim();
+        const listContainer = document.getElementById('stream-list');
+        const statusText = document.getElementById('status-text');
+        const playerWrapper = document.getElementById('player-wrapper');
+
+        if (!imdbId) {
+            alert("Please enter a valid IMDb ID.");
+            return;
+        }
+
+        // Reset UI State
+        listContainer.innerHTML = "";
+        playerWrapper.style.display = "none";
+        player.pause();
+        statusText.innerText = "Querying Stremio Addon API backend for HTTP mirrors...";
+
+        try {
+            // Target the defined Stremio Addon protocol endpoint for series/anime/movies
+            // Format: BASE_URL / stream / {type} / {id}.json
+            const targetUrl = `${ADDON_BASE_URL}/stream/series/${imdbId}:1:1.json`;
+            
+            const response = await fetch(targetUrl);
+            if (!response.ok) throw new Error("Failed to receive stream payload.");
+            
+            const data = await response.json();
+
+            if (!data.streams || data.streams.length === 0) {
+                statusText.innerText = "No active non-torrent HTTP streams found for this ID.";
+                return;
             }
+
+            statusText.innerText = `Found ${data.streams.length} direct web streams. Select one below to play:`;
+
+            // Filter out torrent protocols (magnet/infoHash) and only show direct HTTP sources
+            const directStreams = data.streams.filter(stream => stream.url && stream.url.startsWith('http'));
+
+            if(directStreams.length === 0) {
+                 statusText.innerText = "Streams found, but they rely on P2P/Torrents. (Filtered out).";
+                 return;
+            }
+
+            directStreams.forEach((stream, index) => {
+                const li = document.createElement('li');
+                // Clean up addon strings for web UI presentation
+                li.innerText = stream.title || stream.name || `Direct Stream Mirror #${index + 1}`;
+                li.onclick = () => launchPlayer(stream.url);
+                listContainer.appendChild(li);
+            });
+
+        } catch (error) {
+            console.error(error);
+            statusText.innerText = "Error fetching from addon. Ensure CORS or endpoints are unblocked.";
+        }
+    }
+
+    function launchPlayer(videoUrl) {
+        const playerWrapper = document.getElementById('player-wrapper');
+        playerWrapper.style.display = "block";
+        
+        // Feed the direct HTTP link returned by the addon cleanly into the player source
+        player.src({ src: videoUrl, type: 'video/mp4' });
+        player.ready(() => {
+            player.play().catch(err => {
+                console.log("Autoplay blocked or stream formatting requires HLS native translation extension.", err);
+            });
         });
-    </script>
+        
+        // Scroll smoothly to player canvas
+        playerWrapper.scrollIntoView({ behavior: 'smooth' });
+    }
+</script>
 </body>
 </html>
