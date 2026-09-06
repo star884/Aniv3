@@ -1,13 +1,23 @@
 {
-  "name": "anime-stream-engine",
+  "name": "stremio-anime-site",
   "version": "1.0.0",
-  "description": "Node.js backend proxy wrapper for Stremio anime streaming",
+  "description": "An automated anime streaming site powered by a Stremio addon backend.",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "npx nodemon server.js"
   },
+  "keywords": [
+    "stremio",
+    "anime",
+    "streaming",
+    "automated"
+  ],
+  "author": "",
+  "license": "ISC",
   "dependencies": {
-    "express": "^4.19.2",
-    "node-fetch": "^2.7.0"
+    "axios": "^1.7.0",
+    "ejs": "^3.1.10",
+    "express": "^4.19.2"
   }
 }
