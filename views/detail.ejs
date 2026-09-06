@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title><%= anime.name %> - Stream Hub</title>
+    <style>
+        body { background: #0f1115; color: #fff; font-family: sans-serif; padding: 20px; display: flex; flex-direction: column; align-items: center; }
+        .container { max-width: 900px; width: 100%; display: flex; gap: 30px; margin-bottom: 20px; }
+        .poster { width: 240px; border-radius: 8px; }
+        .player-wrapper { width: 100%; max-width: 900px; aspect-ratio: 16/9; background: #000; margin-top: 20px; border: 2px solid #ff5e00; border-radius: 8px; overflow: hidden; }
+        video { width: 100%; height: 100%; }
+        .episodes { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 15px; }
+        .ep-btn { background: #232834; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; }
+        .ep-btn:hover { background: #ff5e00; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <img class="poster" src="<%= anime.poster %>">
+        <div>
+            <h1><%= anime.name %></h1>
+            <p><%= anime.description %></p>
+            <h3>Select Episode</h3>
+            <div class="episodes">
+                <% if(anime.videos && anime.videos.length > 0) { %>
+                    <% anime.videos.forEach(ep => { %>
+                        <button class="ep-btn" onclick="loadEpisode('<%= anime.id %>', '<%= ep.id %>')">
+                            Ep <%= ep.episode || ep.number %>
+                        </button>
+                    <% }) %>
+                <% } else { %>
+                    <p>No episodes indexed by the addon wrapper.</p>
+                <% } %>
+            </div>
+        </div>
+    </div>
+
+    <!-- Embedded Player View -->
+    <div class="player-wrapper">
+        <video id="main-player" controls autoplay playsinline></video>
+    </div>
+
+    <script>
+        async function loadEpisode(animeId, episodeId) {
+            const player = document.getElementById('main-player');
+            player.pause();
+            
+            try {
+                const res = await fetch(`/api/stream/${animeId}/${episodeId}`);
+                const data = await res.json();
+                
+                if (data.success && data.streams.length > 0) {
+                    // Pull the absolute top direct streaming source found
+                    const trackUrl = data.streams[0].url;
+                    player.src = trackUrl;
+                    player.load();
+                    player.play();
+                } else {
+                    alert('Error: ' + (data.message || 'Could not harvest direct stream link.'));
+                }
+            } catch (err) {
+                console.error(err);
+                alert('Addon query connection timeout.');
+            }
+        }
+    </script>
+</body>
+</html>
