@@ -2,94 +2,51 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Anime Stream Engine</title>
-    <script src="https://jsdelivr.net"></script>
-    <style>
-        body { font-family: sans-serif; background: #121212; color: #fff; text-align: center; padding: 20px; }
-        .container { max-width: 800px; margin: auto; }
-        select, button { padding: 10px; margin: 10px; background: #222; color: #fff; border: 1px solid #444; border-radius: 4px; cursor: pointer; }
-        video { width: 100%; max-width: 760px; background: #000; border-radius: 8px; margin-top: 15px; }
-        .stream-option { padding: 12px; background: #1e1e1e; margin: 8px auto; max-width: 760px; cursor: pointer; border-radius: 4px; text-align: left; border: 1px solid #333; }
-        .stream-option:hover { background: #292929; border-color: #555; }
-    </style>
+    <title>Custom Anime Stream Web Client</title>
+    <!-- Include a modern web video player like Plyr -->
+    <link rel="stylesheet" href="https://plyr.io" />
 </head>
 <body>
 
-<div class="container">
-    <h1>Anime Stream Engine</h1>
-    <p>Secure Node Backend Architecture (Non-Torrent)</p>
-
-    <div>
-        <label for="animeId">Select Anime Title:</label>
-        <select id="animeId">
-            <option value="tt22765314">Frieren: Beyond Journey's End (S1 Ep1)</option>
-            <option value="tt0434706">Naruto (S1 Ep1)</option>
-            <option value="tt15320550">Chainsaw Man (S1 Ep1)</option>
-        </select>
-        <button onclick="fetchAnimeStreams()">Find Video Streams</button>
+    <div style="max-width: 800px; margin: 20px auto; text-align: center;">
+        <h2>Custom Anime Stream UI</h2>
+        <button id="loadStream">Play Episode 1 (via Addon API)</button>
+        <br><br>
+        
+        <!-- Video Container -->
+        <video id="player" playsinline controls></video>
     </div>
 
-    <div id="loading" style="display:none;">Querying secure backend proxy...</div>
-    <div id="streamList"></div>
+    <script src="https://plyr.io"></script>
+    <script>
+        const player = new Plyr('#player');
 
-    <video id="videoPlayer" controls></video>
-</div>
+        document.getElementById('loadStream').addEventListener('click', async () => {
+            // 1. Target a public non-torrent stream addon endpoint 
+            // Syntax: https://[addon-domain]/stream/{type}/{id}.json
+            const ADDON_STREAM_API = "https://superflixapi.xyz"; 
 
-<script>
-async function fetchAnimeStreams() {
-    const animeId = document.getElementById('animeId').value;
-    const streamListDiv = document.getElementById('streamList');
-    const loadingDiv = document.getElementById('loading');
-    
-    streamListDiv.innerHTML = "";
-    loadingDiv.style.display = "block";
+            try {
+                // 2. Fetch the JSON stream payload directly from the Stremio Addon
+                const response = await fetch(ADDON_STREAM_API);
+                const data = await response.json();
 
-    try {
-        // Fetch streams from your OWN backend endpoint instead of Stremio directly
-        const response = await fetch(`/api/streams/${animeId}`);
-        const data = await response.json();
-        loadingDiv.style.display = "none";
+                if (data.streams && data.streams.length > 0) {
+                    // 3. Extract the direct HTTP/HLS stream URL (preferring non-torrent links)
+                    const directStreamUrl = data.streams[0].url; 
+                    
+                    console.log("Found direct web stream:", directStreamUrl);
 
-        if (data.error || !data.streams || data.streams.length === 0) {
-            streamListDiv.innerHTML = "<p>No secure direct streaming sources found for this title.</p>";
-            return;
-        }
-
-        data.streams.forEach((stream, index) => {
-            const streamEl = document.createElement('div');
-            streamEl.className = 'stream-option';
-            streamEl.innerHTML = `<strong>Source ${index + 1}:</strong> ${stream.title || 'Direct Video Server'} <br><small>${stream.name || ''}</small>`;
-            
-            streamEl.onclick = () => playVideo(stream.url);
-            streamListDiv.appendChild(streamEl);
+                    // 4. Feed the URL directly into your website's HTML5 Player
+                    document.getElementById('player').src = directStreamUrl;
+                    player.play();
+                } else {
+                    alert("No direct web streams found for this ID.");
+                }
+            } catch (error) {
+                console.error("Error communicating with Stremio Addon API:", error);
+            }
         });
-
-    } catch (error) {
-        loadingDiv.style.display = "none";
-        streamListDiv.innerHTML = `<p style="color:red;">Error communicating with server: ${error.message}</p>`;
-    }
-}
-
-function playVideo(videoUrl) {
-    const video = document.getElementById('videoPlayer');
-    
-    if (videoUrl.includes('.m3u8')) {
-        if (Hls.isSupported()) {
-            const hls = new Hls();
-            hls.loadSource(videoUrl);
-            hls.attachMedia(video);
-            hls.on(Hls.Events.MANIFEST_PARSED, () => video.play());
-        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-            video.src = videoUrl;
-            video.play();
-        }
-    } else {
-        video.src = videoUrl;
-        video.play();
-    }
-}
-</script>
-
+    </script>
 </body>
 </html>
