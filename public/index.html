@@ -3,128 +3,88 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Instant Non-Torrent Stream Portal</title>
-    <!-- Video.js Styles -->
-    <link href="https://zencdn.net" rel="stylesheet" />
+    <title>Auto-Updating Anime Core</title>
     <style>
-        body { font-family: 'Segoe UI', Arial, sans-serif; background: #111; color: #fff; margin: 0; padding: 20px; }
-        .container { max-width: 900px; margin: 0 auto; }
-        h1 { color: #e50914; text-align: center; }
-        .search-box { display: flex; gap: 10px; margin-bottom: 20px; justify-content: center; }
-        input, button { padding: 12px; font-size: 16px; border: none; border-radius: 4px; }
-        input { width: 60%; background: #222; color: #fff; }
-        button { background: #e50914; color: #fff; cursor: pointer; font-weight: bold; }
-        button:hover { background: #b80710; }
-        .player-container { margin-top: 20px; display: none; background: #000; border-radius: 8px; overflow: hidden; }
-        #stream-list { list-style: none; padding: 0; }
-        #stream-list li { background: #222; margin: 8px 0; padding: 15px; border-radius: 4px; cursor: pointer; transition: 0.2s; }
-        #stream-list li:hover { background: #333; border-left: 5px solid #e50914; }
-        .status { text-align: center; color: #aaa; margin: 10px 0; }
+        body { background: #0f0f13; color: #fff; font-family: sans-serif; margin: 0; padding: 20px; }
+        h1 { text-align: center; color: #ff4757; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 20px; margin-top: 20px; }
+        .card { background: #1e1e24; border-radius: 8px; overflow: hidden; cursor: pointer; transition: transform 0.2s; }
+        .card:hover { transform: scale(1.05); }
+        .card img { width: 100%; height: 260px; object-fit: cover; }
+        .card-info { padding: 10px; font-size: 14px; text-align: center; font-weight: bold; }
+        #player-container { display: none; margin: 20px auto; max-width: 800px; text-align: center; }
+        video { width: 100%; border-radius: 8px; background: #000; }
+        .close-btn { background: #ff4757; border: none; color: white; padding: 10px 20px; cursor: pointer; margin-bottom: 10px; border-radius: 4px; }
     </style>
 </head>
 <body>
 
-<div class="container">
-    <h1>Anime & Media Stream Portal</h1>
+    <h1>Automated Anime Stream Station</h1>
     
-    <div class="search-box">
-        <!-- Default IMDB ID provided for testing: Attack on Titan (tt2560146) -->
-        <input type="text" id="imdb-id" value="tt2560146" placeholder="Enter IMDb ID (e.g., tt2560146)">
-        <button onclick="fetchStreams()">Find Streams</button>
+    <div id="player-container">
+        <button class="close-btn" onclick="closePlayer()">✕ Close Video</button>
+        <video id="video-player" controls autoplay></video>
+        <h3 id="playing-title"></h3>
     </div>
 
-    <div class="status" id="status-text"></div>
+    <div class="grid" id="library-grid"><!-- Dynamic items insert here --></div>
 
-    <ul id="stream-list"></ul>
-
-    <div class="player-container" id="player-wrapper">
-        <video id="my-video" class="video-js vjs-default-skin vjs-big-play-centered" controls preload="auto" width="900" height="506">
-            <p class="vjs-no-js">To view this video please enable JavaScript, and consider upgrading to a web browser that supports HTML5 video.</p>
-        </video>
-    </div>
-</div>
-
-<!-- Video.js Framework Script -->
-<script src="https://zencdn.net"></script>
-<script>
-    // Initialize Video.js Player instance
-    const player = videojs('my-video');
-
-    // Using a trusted, top-10 HTTP direct-stream scraper proxy endpoint 
-    // Shluflix / Superflix style mirror routing
-    const ADDON_BASE_URL = "https://shluflix.xyz"; 
-
-    async function fetchStreams() {
-        const imdbId = document.getElementById('imdb-id').value.trim();
-        const listContainer = document.getElementById('stream-list');
-        const statusText = document.getElementById('status-text');
-        const playerWrapper = document.getElementById('player-wrapper');
-
-        if (!imdbId) {
-            alert("Please enter a valid IMDb ID.");
-            return;
+    <script>
+        async function loadLibrary() {
+            const grid = document.getElementById('library-grid');
+            try {
+                const res = await fetch('/api/library');
+                const json = await res.json();
+                
+                if(json.success) {
+                    grid.innerHTML = json.data.map(anime => `
+                        <div class="card" onclick="watchAnime('${anime.id}', '${escape(anime.title)}')">
+                            <img src="${anime.poster}" alt="${anime.title}">
+                            <div class="card-info">${anime.title}</div>
+                        </div>
+                    `).join('');
+                }
+            } catch (err) {
+                grid.innerHTML = "<p>Failed syncing database with Stremio provider feed.</p>";
+            }
         }
 
-        // Reset UI State
-        listContainer.innerHTML = "";
-        playerWrapper.style.display = "none";
-        player.pause();
-        statusText.innerText = "Querying Stremio Addon API backend for HTTP mirrors...";
-
-        try {
-            // Target the defined Stremio Addon protocol endpoint for series/anime/movies
-            // Format: BASE_URL / stream / {type} / {id}.json
-            const targetUrl = `${ADDON_BASE_URL}/stream/series/${imdbId}:1:1.json`;
+        async function watchAnime(id, title) {
+            const container = document.getElementById('player-container');
+            const player = document.getElementById('video-player');
+            const titleHeader = document.getElementById('playing-title');
             
-            const response = await fetch(targetUrl);
-            if (!response.ok) throw new Error("Failed to receive stream payload.");
-            
-            const data = await response.json();
+            titleHeader.innerText = `Loading links for: ${unescape(title)}...`;
+            container.style.display = 'block';
+            window.scrollTo({ top: 0, behavior: 'smooth' });
 
-            if (!data.streams || data.streams.length === 0) {
-                statusText.innerText = "No active non-torrent HTTP streams found for this ID.";
-                return;
+            try {
+                const res = await fetch(`/api/stream/${id}`);
+                const json = await res.json();
+
+                if (json.success && json.streams.length > 0) {
+                    titleHeader.innerText = `Now Playing: ${unescape(title)}`;
+                    player.src = json.streams[0].url; 
+                } else {
+                    alert("No responsive non-torrent links found for this title.");
+                    closePlayer();
+                }
+            } catch (err) {
+                alert("Network communication error.");
+                closePlayer();
             }
-
-            statusText.innerText = `Found ${data.streams.length} direct web streams. Select one below to play:`;
-
-            // Filter out torrent protocols (magnet/infoHash) and only show direct HTTP sources
-            const directStreams = data.streams.filter(stream => stream.url && stream.url.startsWith('http'));
-
-            if(directStreams.length === 0) {
-                 statusText.innerText = "Streams found, but they rely on P2P/Torrents. (Filtered out).";
-                 return;
-            }
-
-            directStreams.forEach((stream, index) => {
-                const li = document.createElement('li');
-                // Clean up addon strings for web UI presentation
-                li.innerText = stream.title || stream.name || `Direct Stream Mirror #${index + 1}`;
-                li.onclick = () => launchPlayer(stream.url);
-                listContainer.appendChild(li);
-            });
-
-        } catch (error) {
-            console.error(error);
-            statusText.innerText = "Error fetching from addon. Ensure CORS or endpoints are unblocked.";
         }
-    }
 
-    function launchPlayer(videoUrl) {
-        const playerWrapper = document.getElementById('player-wrapper');
-        playerWrapper.style.display = "block";
-        
-        // Feed the direct HTTP link returned by the addon cleanly into the player source
-        player.src({ src: videoUrl, type: 'video/mp4' });
-        player.ready(() => {
-            player.play().catch(err => {
-                console.log("Autoplay blocked or stream formatting requires HLS native translation extension.", err);
-            });
-        });
-        
-        // Scroll smoothly to player canvas
-        playerWrapper.scrollIntoView({ behavior: 'smooth' });
-    }
-</script>
+        function closePlayer() {
+            const container = document.getElementById('player-container');
+            const player = document.getElementById('video-player');
+            player.pause();
+            player.src = "";
+            container.style.display = 'none';
+        }
+
+        // Initialize library sync on mount
+        loadLibrary();
+    </script>
 </body>
 </html>
