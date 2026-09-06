@@ -2,67 +2,40 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title><%= anime.name %> - Stream Hub</title>
+    <title>Stremio Powered Anime Web App</title>
     <style>
-        body { background: #0f1115; color: #fff; font-family: sans-serif; padding: 20px; display: flex; flex-direction: column; align-items: center; }
-        .container { max-width: 900px; width: 100%; display: flex; gap: 30px; margin-bottom: 20px; }
-        .poster { width: 240px; border-radius: 8px; }
-        .player-wrapper { width: 100%; max-width: 900px; aspect-ratio: 16/9; background: #000; margin-top: 20px; border: 2px solid #ff5e00; border-radius: 8px; overflow: hidden; }
-        video { width: 100%; height: 100%; }
-        .episodes { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 15px; }
-        .ep-btn { background: #232834; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; }
-        .ep-btn:hover { background: #ff5e00; }
+        body { background: #0f1115; color: #fff; font-family: sans-serif; padding: 20px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 20px; margin-bottom: 40px; }
+        .card { background: #1c1f26; border-radius: 8px; overflow: hidden; text-decoration: none; color: white; transition: 0.2s; }
+        .card:hover { transform: translateY(-5px); }
+        .card img { width: 100%; height: 260px; object-fit: cover; }
+        .card-info { padding: 10px; font-size: 14px; text-align: center; }
+        h2 { border-bottom: 2px solid #323846; padding-bottom: 5px; color: #ff5e00; }
+        .timestamp { color: #888; font-size: 12px; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <img class="poster" src="<%= anime.poster %>">
-        <div>
-            <h1><%= anime.name %></h1>
-            <p><%= anime.description %></p>
-            <h3>Select Episode</h3>
-            <div class="episodes">
-                <% if(anime.videos && anime.videos.length > 0) { %>
-                    <% anime.videos.forEach(ep => { %>
-                        <button class="ep-btn" onclick="loadEpisode('<%= anime.id %>', '<%= ep.id %>')">
-                            Ep <%= ep.episode || ep.number %>
-                        </button>
-                    <% }) %>
-                <% } else { %>
-                    <p>No episodes indexed by the addon wrapper.</p>
-                <% } %>
-            </div>
-        </div>
+    <h1>Automated Anime Portal</h1>
+    <p class="timestamp">Database Refreshed Dynamically: <%= library.lastUpdated %></p>
+
+    <h2>🔥 Trending Releases</h2>
+    <div class="grid">
+        <% library.trending.forEach(item => { %>
+            <a class="card" href="/anime/<%= item.id %>">
+                <img src="<%= item.poster %>" alt="<%= item.name %>">
+                <div class="card-info"><strong><%= item.name %></strong></div>
+            </a>
+        <% }) %>
     </div>
 
-    <!-- Embedded Player View -->
-    <div class="player-wrapper">
-        <video id="main-player" controls autoplay playsinline></video>
+    <h2>⭐ Most Popular All-Time</h2>
+    <div class="grid">
+        <% library.popular.forEach(item => { %>
+            <a class="card" href="/anime/<%= item.id %>">
+                <img src="<%= item.poster %>" alt="<%= item.name %>">
+                <div class="card-info"><strong><%= item.name %></strong></div>
+            </a>
+        <% }) %>
     </div>
-
-    <script>
-        async function loadEpisode(animeId, episodeId) {
-            const player = document.getElementById('main-player');
-            player.pause();
-            
-            try {
-                const res = await fetch(`/api/stream/${animeId}/${episodeId}`);
-                const data = await res.json();
-                
-                if (data.success && data.streams.length > 0) {
-                    // Pull the absolute top direct streaming source found
-                    const trackUrl = data.streams[0].url;
-                    player.src = trackUrl;
-                    player.load();
-                    player.play();
-                } else {
-                    alert('Error: ' + (data.message || 'Could not harvest direct stream link.'));
-                }
-            } catch (err) {
-                console.error(err);
-                alert('Addon query connection timeout.');
-            }
-        }
-    </script>
 </body>
 </html>
