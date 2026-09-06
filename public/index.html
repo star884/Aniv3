@@ -3,47 +3,40 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Minimalist Anime Stream Player</title>
-    <!-- Include HLS.js to play HTTP live streams (.m3u8) directly in any browser -->
+    <title>Anime Stream Engine</title>
     <script src="https://jsdelivr.net"></script>
     <style>
         body { font-family: sans-serif; background: #121212; color: #fff; text-align: center; padding: 20px; }
         .container { max-width: 800px; margin: auto; }
-        select, button { padding: 10px; margin: 10px; background: #222; color: #fff; border: 1px solid #444; border-radius: 4px; }
+        select, button { padding: 10px; margin: 10px; background: #222; color: #fff; border: 1px solid #444; border-radius: 4px; cursor: pointer; }
         video { width: 100%; max-width: 760px; background: #000; border-radius: 8px; margin-top: 15px; }
-        .stream-option { padding: 8px; background: #1e1e1e; margin: 5px auto; max-width: 760px; cursor: pointer; border-radius: 4px; text-align: left; }
-        .stream-option:hover { background: #333; }
+        .stream-option { padding: 12px; background: #1e1e1e; margin: 8px auto; max-width: 760px; cursor: pointer; border-radius: 4px; text-align: left; border: 1px solid #333; }
+        .stream-option:hover { background: #292929; border-color: #555; }
     </style>
 </head>
 <body>
 
 <div class="container">
     <h1>Anime Stream Engine</h1>
-    <p>Using Non-Torrent Stremio Stream Routing</p>
+    <p>Secure Node Backend Architecture (Non-Torrent)</p>
 
-    <!-- Selection UI for Demo -->
     <div>
         <label for="animeId">Select Anime Title:</label>
         <select id="animeId">
-            <!-- Kitsunee/IMDb ID equivalents used by stream indexers -->
-            <option value="tt22765314">Frieren: Beyond Journey's End (Season 1 Ep 1)</option>
-            <option value="tt0434706">Naruto (Episode 1)</option>
-            <option value="tt15320550">Chainsaw Man (Season 1 Ep 1)</option>
+            <option value="tt22765314">Frieren: Beyond Journey's End (S1 Ep1)</option>
+            <option value="tt0434706">Naruto (S1 Ep1)</option>
+            <option value="tt15320550">Chainsaw Man (S1 Ep1)</option>
         </select>
         <button onclick="fetchAnimeStreams()">Find Video Streams</button>
     </div>
 
-    <div id="loading" style="display:none;">Scraping direct HTTPS providers...</div>
+    <div id="loading" style="display:none;">Querying secure backend proxy...</div>
     <div id="streamList"></div>
 
-    <!-- Video Element -->
     <video id="videoPlayer" controls></video>
 </div>
 
 <script>
-// Using a trusted community non-torrent Stremio provider API gateway URL
-const ADDON_STREAM_URL = "https://onrender.com";
-
 async function fetchAnimeStreams() {
     const animeId = document.getElementById('animeId').value;
     const streamListDiv = document.getElementById('streamList');
@@ -52,59 +45,46 @@ async function fetchAnimeStreams() {
     streamListDiv.innerHTML = "";
     loadingDiv.style.display = "block";
 
-    // Format required by Stremio Addon Protocol: /stream/{type}/{id}:{season}:{episode}.json
-    // Simulating Season 1, Episode 1 for the selected title
-    const targetEndpoint = `${ADDON_STREAM_URL}${animeId}:1:1.json`;
-
     try {
-        const response = await fetch(targetEndpoint);
+        // Fetch streams from your OWN backend endpoint instead of Stremio directly
+        const response = await fetch(`/api/streams/${animeId}`);
         const data = await response.json();
         loadingDiv.style.display = "none";
 
-        if (!data.streams || data.streams.length === 0) {
-            streamListDiv.innerHTML = "<p>No non-torrent direct links found for this selection.</p>";
+        if (data.error || !data.streams || data.streams.length === 0) {
+            streamListDiv.innerHTML = "<p>No secure direct streaming sources found for this title.</p>";
             return;
         }
 
-        // Iterate through streams returned by the Stremio Addon API
         data.streams.forEach((stream, index) => {
-            // Filter strictly for HTTPS Direct links (Skip Torrent InfoHashes)
-            if (stream.url) {
-                const streamEl = document.createElement('div');
-                streamEl.className = 'stream-option';
-                streamEl.innerHTML = `<strong>Source ${index + 1}:</strong> ${stream.title || 'Direct Link'} <br> <small>${stream.name || ''}</small>`;
-                
-                // Play stream on user click
-                streamEl.onclick = () => playVideo(stream.url);
-                streamListDiv.appendChild(streamEl);
-            }
+            const streamEl = document.createElement('div');
+            streamEl.className = 'stream-option';
+            streamEl.innerHTML = `<strong>Source ${index + 1}:</strong> ${stream.title || 'Direct Video Server'} <br><small>${stream.name || ''}</small>`;
+            
+            streamEl.onclick = () => playVideo(stream.url);
+            streamListDiv.appendChild(streamEl);
         });
 
     } catch (error) {
         loadingDiv.style.display = "none";
-        streamListDiv.innerHTML = `<p style="color:red;">Error reaching Addon Engine: ${error.message}</p>`;
+        streamListDiv.innerHTML = `<p style="color:red;">Error communicating with server: ${error.message}</p>`;
     }
 }
 
 function playVideo(videoUrl) {
     const video = document.getElementById('videoPlayer');
     
-    // Check if the stream format is HLS (.m3u8) which requires a streamer engine
     if (videoUrl.includes('.m3u8')) {
         if (Hls.isSupported()) {
             const hls = new Hls();
             hls.loadSource(videoUrl);
             hls.attachMedia(video);
-            hls.on(Hls.Events.MANIFEST_PARSED, function() {
-                video.play();
-            });
+            hls.on(Hls.Events.MANIFEST_PARSED, () => video.play());
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-            // Native support (Safari/iOS)
             video.src = videoUrl;
             video.play();
         }
     } else {
-        // Fallback for standard direct MP4/WebM video files
         video.src = videoUrl;
         video.play();
     }
