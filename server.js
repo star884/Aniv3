@@ -1,42 +1,60 @@
 const express = require('express');
-const fetch = require('node-fetch');
+const axios = require('axios');
 const path = require('path');
-const app = express();
 
-// Render sets the PORT dynamically via environment variables
+const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Base Stremio provider API gateway URL (hidden from the frontend browser)
-const STREMIO_ADDON_URL = "https://onrender.com";
+// Publicly hosted Stremio catalog and stream endpoints 
+const ANIME_CATALOG_URL = 'https://stremio.net';
+const CYBERFLIX_STREAM_BASE = 'https://cyberflix.ovh'; 
 
-// Serve static HTML/JS files from the "public" directory
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Proxy route: Your frontend fetches from here, and this server talks to Stremio
-app.get('/api/streams/:imdbId', async (req, res) => {
+// 1. Dynamic Library Endpoint - Automatically syncs with the live Stremio addon data
+app.get('/api/library', async (req, res) => {
     try {
-        const { imdbId } = req.params;
-        // Construct the Stremio Addon Protocol path for Season 1, Episode 1
-        const targetUrl = `${STREMIO_ADDON_URL}${imdbId}:1:1.json`;
-
-        // Server-to-server request (never blocked by browser CORS policies)
-        const response = await fetch(targetUrl);
-        if (!response.ok) {
-            throw new Error(`Addon responded with status: ${response.status}`);
-        }
-
-        const data = await response.json();
-        
-        // Clean the data: Only return safe HTTP direct video streams, ignore torrent links
-        const safeStreams = (data.streams || []).filter(stream => stream.url);
-
-        res.json({ streams: safeStreams });
+        const response = await axios.get(ANIME_CATALOG_URL);
+        // Map Stremio's standard Meta format into your website data layout
+        const animeList = response.data.metas.map(item => ({
+            id: item.id,
+            title: item.name,
+            poster: item.poster,
+            description: item.description || 'No description available.',
+            banner: item.background
+        }));
+        res.json({ success: true, data: animeList });
     } catch (error) {
-        console.error("Proxy Error:", error.message);
-        res.status(500).json({ error: "Failed to fetch streams from addon source." });
+        console.error("Error updating library from addon:", error.message);
+        res.status(500).json({ success: false, message: "Could not fetch dynamic catalog." });
+    }
+});
+
+// 2. Stream Fetcher Endpoint - Resolves Stremio streams to direct HTTP files
+app.get('/api/stream/:id', async (req, res) => {
+    try {
+        const animeId = req.params.id;
+        // Stremio addons require type:id:season:episode formatting for series
+        // Defaulting to Season 1 Episode 1 for illustration
+        const targetUrl = `${CYBERFLIX_STREAM_BASE}/${animeId}%3A1%3A1.json`;
+        
+        const response = await axios.get(targetUrl);
+        
+        if (response.data && response.data.streams && response.data.streams.length > 0) {
+            // Filter for pure HTTP links to honor non-torrent preferences
+            const directStreams = response.data.streams.filter(s => s.url && s.url.startsWith('http'));
+            
+            if (directStreams.length > 0) {
+                return res.json({ success: true, streams: directStreams });
+            }
+        }
+        res.status(404).json({ success: false, message: "No active HTTP streams found for this title." });
+    } catch (error) {
+        console.error("Error pulling streams:", error.message);
+        res.status(500).json({ success: false, message: "Stream resolution failed." });
     }
 });
 
 app.listen(PORT, () => {
-    console.log(`Server engine running smoothly on port ${PORT}`);
+    console.log(`Anime Site running smoothly at http://localhost:${PORT}`);
 });
